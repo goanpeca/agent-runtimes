@@ -645,7 +645,7 @@ export class ACPAdapter extends BaseProtocolAdapter {
     }
 
     // Handle error events - emit as error, not as message
-    if (updateType === 'error' && params.error) {
+    if (params.error) {
       this.emit({
         type: 'error',
         error: new Error(params.error as string),

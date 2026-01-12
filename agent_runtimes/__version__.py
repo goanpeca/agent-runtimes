@@ -3,4 +3,4 @@
 
 """Agent Runtimes version information."""
 
-__version__ = "0.0.2"
+from ._version import __version__
