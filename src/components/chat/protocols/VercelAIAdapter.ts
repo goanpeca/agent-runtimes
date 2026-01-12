@@ -127,6 +127,8 @@ export class VercelAIAdapter extends BaseProtocolAdapter {
       model?: string;
       /** Full conversation history to send with the message */
       messages?: ChatMessage[];
+      /** Builtin tools / MCP tools to enable for this request */
+      builtinTools?: string[];
     },
   ): Promise<void> {
     if (this.abortController) {
@@ -167,6 +169,11 @@ export class VercelAIAdapter extends BaseProtocolAdapter {
         ...(options?.tools && { tools: options.tools }),
         // Model override for per-request model selection
         ...(options?.model && { model: options.model }),
+        // Builtin tools / MCP tools to enable
+        ...(options?.builtinTools &&
+          options.builtinTools.length > 0 && {
+            builtinTools: options.builtinTools,
+          }),
       };
 
       if (options?.model) {
