@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Any
 
+from pydantic_ai import ModelSettings
 from agent_runtimes.types import AIModel
 
 logger = logging.getLogger(__name__)
@@ -127,7 +128,11 @@ def create_model_with_provider(
         # Wrap in OpenAIProvider
         azure_provider_with_timeout = OpenAIProvider(openai_client=azure_client)
 
-        return OpenAIChatModel(model_name, provider=azure_provider_with_timeout)
+        return OpenAIChatModel(
+            model_name, 
+            provider=azure_provider_with_timeout,
+            settings=ModelSettings(parallel_tool_calls=False)
+        )
     elif model_provider.lower() == "anthropic":
         from anthropic import AsyncAnthropic
         from pydantic_ai.models.anthropic import AnthropicModel
@@ -145,7 +150,11 @@ def create_model_with_provider(
         # Wrap in AnthropicProvider
         anthropic_provider = AnthropicProvider(anthropic_client=anthropic_client)
 
-        return AnthropicModel(model_name, provider=anthropic_provider)
+        return AnthropicModel(
+            model_name, 
+            provider=anthropic_provider,
+            settings=ModelSettings(parallel_tool_calls=False)
+        )
     elif model_provider.lower() in ["openai", "github-copilot"]:
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers import infer_provider
@@ -163,7 +172,11 @@ def create_model_with_provider(
             base_url=str(openai_provider_base.client.base_url), http_client=http_client
         )
 
-        return OpenAIChatModel(model_name, provider=openai_provider)
+        return OpenAIChatModel(
+            model_name, 
+            provider=openai_provider,
+            settings=ModelSettings(parallel_tool_calls=False)
+        )
     else:
         # For other providers, use the standard string format
         # Note: String format doesn't allow custom timeout configuration
@@ -236,13 +249,13 @@ def create_default_models(tool_ids: list[str]) -> list[AIModel]:
         },
         # AWS Bedrock models
         {
-            "id": "bedrock:anthropic.claude-sonnet-4-5-20250514-v1:0",
+            "id": "bedrock:anthropic.claude-sonnet-4-5-20250929-v1:0",
             "name": "Claude Sonnet 4.5 (Bedrock)",
             "required_env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
         },
         {
-            "id": "bedrock:anthropic.claude-3-5-haiku-20241022-v1:0",
-            "name": "Claude 3.5 Haiku (Bedrock)",
+            "id": "bedrock:anthropic.claude-haiku-4-5-20251001-v1:0",
+            "name": "Claude 4.5 Haiku (Bedrock)",
             "required_env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
         },
         {
@@ -253,11 +266,6 @@ def create_default_models(tool_ids: list[str]) -> list[AIModel]:
         {
             "id": "bedrock:amazon.nova-lite-v1:0",
             "name": "Amazon Nova Lite",
-            "required_env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
-        },
-        {
-            "id": "bedrock:meta.llama3-3-70b-instruct-v1:0",
-            "name": "Llama 3.3 70B (Bedrock)",
             "required_env_vars": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
         },
         # Azure OpenAI models
