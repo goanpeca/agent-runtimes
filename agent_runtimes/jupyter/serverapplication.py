@@ -24,7 +24,6 @@ from agent_runtimes.jupyter.handlers.mcp_handler import (
 from agent_runtimes.jupyter.handlers.config_handler import ConfigHandler
 from agent_runtimes.jupyter.handlers.index_handler import IndexHandler
 from agent_runtimes.jupyter.handlers.login_handler import LoginHandler
-from agent_runtimes.jupyter.handlers.service_worker_handler import ServiceWorkerHandler
 from agent_runtimes.services.authn.state import get_server_port
 
 DEFAULT_STATIC_FILES_PATH = os.path.join(os.path.dirname(__file__), "./static")
@@ -337,10 +336,6 @@ class AgentRuntimesExtensionApp(ExtensionAppJinjaMixin, ExtensionApp):
             (url_path_join(self.name, "benchmarks"), IndexHandler),
             (url_path_join(self.name, "kernels"), IndexHandler),
             (url_path_join(self.name, "login"), LoginHandler),
-            (
-                url_path_join(self.name, "service-worker", r"([^/]+\.js)"),
-                ServiceWorkerHandler,
-            ),
             (url_path_join(self.name, "configure"), ConfigureHandler),
             (url_path_join(self.name, "chat"), VercelAIChatHandler),
             (url_path_join(self.name, "mcp", "servers"), MCPServersHandler),
