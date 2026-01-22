@@ -5,7 +5,7 @@
 
 /// <reference types="vite/client" />
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { PageLayout, IconButton } from '@primer/react';
 import { SidebarCollapseIcon, SidebarExpandIcon } from '@primer/octicons-react';
 import { AiAgentIcon } from '@datalayer/icons-react';
@@ -65,21 +65,91 @@ const DEFAULT_AGENT_ID = 'demo-agent';
  * 4. Enter the WebSocket URL and Agent ID (or use defaults)
  * 5. Click Connect and start chatting!
  */
-const AgentSpaceFormExample: React.FC = () => {
-  const [wsUrl, setWsUrl] = useState(DEFAULT_WS_URL);
-  const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
-  const [agentName, setAgentName] = useState(DEFAULT_AGENT_ID);
+type AgentSpaceFormExampleProps = {
+  initialWsUrl?: string;
+  initialBaseUrl?: string;
+  initialAgentName?: string;
+  initialAgentLibrary?: AgentLibrary;
+  initialTransport?: Transport;
+  initialModel?: string;
+  initialEnableCodemode?: boolean;
+  initialAllowDirectToolCalls?: boolean;
+  initialEnableToolReranker?: boolean;
+  initialSelectedMcpServers?: string[];
+  autoSelectMcpServers?: boolean;
+};
+
+const MOCK_SKILLS = [
+  {
+    id: 'batch-process',
+    name: 'Batch Process Files',
+    description: 'Process files in a directory with a reusable workflow.',
+  },
+  {
+    id: 'analyze-csv',
+    name: 'Analyze CSV',
+    description: 'Summarize rows, columns, and headers from a CSV file.',
+  },
+  {
+    id: 'pdf-extract',
+    name: 'PDF Extract',
+    description: 'Extract text and tables from PDF documents.',
+  },
+];
+
+const AgentSpaceFormExample: React.FC<AgentSpaceFormExampleProps> = ({
+  initialWsUrl = DEFAULT_WS_URL,
+  initialBaseUrl = DEFAULT_BASE_URL,
+  initialAgentName = DEFAULT_AGENT_ID,
+  initialAgentLibrary = 'pydantic-ai',
+  initialTransport = 'ag-ui',
+  initialModel = 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+  initialEnableCodemode = false,
+  initialAllowDirectToolCalls = false,
+  initialEnableToolReranker = false,
+  initialSelectedMcpServers = [],
+  autoSelectMcpServers = false,
+}) => {
+  const [wsUrl, setWsUrl] = useState(initialWsUrl);
+  const [baseUrl, setBaseUrl] = useState(initialBaseUrl);
+  const [agentName, setAgentName] = useState(initialAgentName);
   const [selectedAgentId, setSelectedAgentId] = useState('new-agent');
-  const [agentLibrary, setAgentLibrary] = useState<AgentLibrary>('pydantic-ai');
-  const [transport, setTransport] = useState<Transport>('ag-ui');
+  const [agentLibrary, setAgentLibrary] =
+    useState<AgentLibrary>(initialAgentLibrary);
+  const [transport, setTransport] = useState<Transport>(initialTransport);
   const [extensions, setExtensions] = useState<Extension[]>([]);
+  const [model, setModel] = useState(initialModel);
   const [isConfigured, setIsConfigured] = useState(false);
+
+  // Agent capabilities state (moved from Header toggles)
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const [enableCodemode, setEnableCodemode] = useState(initialEnableCodemode);
+  const [allowDirectToolCalls, setAllowDirectToolCalls] = useState(
+    initialAllowDirectToolCalls,
+  );
+  const [enableToolReranker, setEnableToolReranker] = useState(
+    initialEnableToolReranker,
+  );
+  const [selectedMcpServers, setSelectedMcpServers] = useState<string[]>(
+    initialSelectedMcpServers,
+  );
+  const autoSelectRef = useRef(false);
+  const enableSkills = selectedSkills.length > 0;
+
+  // Handle codemode change - keep MCP server selections to scope codemode tools
+  const handleEnableCodemodeChange = (enabled: boolean) => {
+    setEnableCodemode(enabled);
+    if (!enabled) {
+      setAllowDirectToolCalls(false);
+      setEnableToolReranker(false);
+    }
+  };
 
   // UI state
   const [activeSession, setActiveSession] = useState('session-1');
   const [richEditor, setRichEditor] = useState(false);
   const [durable, setDurable] = useState(true);
-  const [codemode, setCodemode] = useState(false);
+  const [codemode, _] = useState(false);
   const [showContextTree, setShowContextTree] = useState(false);
   const [showNotebook] = useState(true);
   const [leftPaneVisible, setLeftPaneVisible] = useState(true);
@@ -102,6 +172,32 @@ const AgentSpaceFormExample: React.FC = () => {
       setAgentName(currentAgent.id);
     }
   }, [currentAgent]);
+
+  // Auto-select MCP servers for codemode when requested
+  useEffect(() => {
+    if (!autoSelectMcpServers || autoSelectRef.current) return;
+    if (!enableCodemode) return;
+    if (selectedMcpServers.length > 0) return;
+    if (!baseUrl) return;
+
+    const loadServers = async () => {
+      try {
+        const response = await fetch(`${baseUrl}/api/v1/configure`);
+        if (!response.ok) return;
+        const data = await response.json();
+        const servers = data?.mcpServers || [];
+        const available = servers.filter((s: any) => s.isAvailable);
+        if (available.length > 0) {
+          setSelectedMcpServers([available[0].id]);
+          autoSelectRef.current = true;
+        }
+      } catch {
+        // no-op
+      }
+    };
+
+    void loadServers();
+  }, [autoSelectMcpServers, enableCodemode, selectedMcpServers, baseUrl]);
 
   const handleAgentSelect = (agentId: string) => {
     setSelectedAgentId(agentId);
@@ -137,8 +233,14 @@ const AgentSpaceFormExample: React.FC = () => {
           description: `Agent created via UI (${agentLibrary})`,
           agent_library: agentLibrary,
           transport: transport,
-          model: 'openai:gpt-4o-mini',
+          model: model,
           system_prompt: 'You are a helpful AI assistant.',
+          enable_skills: enableSkills,
+          enable_codemode: enableCodemode,
+          allow_direct_tool_calls: allowDirectToolCalls,
+          enable_tool_reranker: enableToolReranker,
+          selected_mcp_servers: selectedMcpServers,
+          skills: selectedSkills,
         }),
       });
 
@@ -166,7 +268,19 @@ const AgentSpaceFormExample: React.FC = () => {
     } finally {
       setIsCreatingAgent(false);
     }
-  }, [baseUrl, agentName, agentLibrary, transport]);
+  }, [
+    baseUrl,
+    agentName,
+    agentLibrary,
+    transport,
+    model,
+    enableSkills,
+    enableCodemode,
+    allowDirectToolCalls,
+    enableToolReranker,
+    selectedMcpServers,
+    selectedSkills,
+  ]);
 
   /**
    * Delete an agent via the API
@@ -262,14 +376,12 @@ const AgentSpaceFormExample: React.FC = () => {
             agentStatus={currentAgent?.status}
             richEditor={richEditor}
             durable={durable}
-            codemode={codemode}
             showContextTree={showContextTree}
             isNewAgent={selectedAgentId === 'new-agent'}
             isConfigured={isConfigured}
             onSessionChange={setActiveSession}
             onRichEditorChange={setRichEditor}
             onDurableChange={setDurable}
-            onCodemodeChange={setCodemode}
             onToggleContextTree={() => setShowContextTree(!showContextTree)}
             onToggleStatus={
               currentAgent
@@ -409,18 +521,31 @@ const AgentSpaceFormExample: React.FC = () => {
                       wsUrl={wsUrl}
                       baseUrl={baseUrl}
                       agentName={agentName}
+                      model={model}
                       agents={agents}
                       selectedAgentId={selectedAgentId}
                       isCreatingAgent={isCreatingAgent}
                       createError={createError}
+                      enableCodemode={enableCodemode}
+                      allowDirectToolCalls={allowDirectToolCalls}
+                      enableToolReranker={enableToolReranker}
+                      availableSkills={MOCK_SKILLS}
+                      selectedSkills={selectedSkills}
+                      selectedMcpServers={selectedMcpServers}
                       onAgentLibraryChange={setAgentLibrary}
                       onTransportChange={setTransport}
                       onExtensionsChange={setExtensions}
                       onWsUrlChange={setWsUrl}
                       onBaseUrlChange={setBaseUrl}
                       onAgentNameChange={setAgentName}
+                      onModelChange={setModel}
                       onAgentSelect={handleAgentSelect}
                       onConnect={handleConnect}
+                      onEnableCodemodeChange={handleEnableCodemodeChange}
+                      onAllowDirectToolCallsChange={setAllowDirectToolCalls}
+                      onEnableToolRerankerChange={setEnableToolReranker}
+                      onSelectedSkillsChange={setSelectedSkills}
+                      onSelectedMcpServersChange={setSelectedMcpServers}
                     />
                   ) : (
                     /* Chat Interface */
@@ -438,6 +563,11 @@ const AgentSpaceFormExample: React.FC = () => {
                         autoFocus={true}
                         placeholder="Type your message to the agent..."
                         height="calc(100vh - 250px)"
+                        showModelSelector={true}
+                        showToolsMenu={true}
+                        codemodeEnabled={enableCodemode}
+                        initialModel={model}
+                        initialMcpServers={selectedMcpServers}
                         suggestions={[
                           {
                             title: '👋 Say hello',

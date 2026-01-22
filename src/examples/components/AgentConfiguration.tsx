@@ -14,9 +14,8 @@ import {
   Spinner,
   Flash,
   Label,
-  ActionList,
 } from '@primer/react';
-import { CheckIcon, XIcon, ToolsIcon } from '@primer/octicons-react';
+import { ToolsIcon } from '@primer/octicons-react';
 import { useQuery } from '@tanstack/react-query';
 import { Box } from '@datalayer/primer-addons';
 import type { Agent } from '../stores/examplesStore';
@@ -29,6 +28,12 @@ export interface MCPServerTool {
   name: string;
   description?: string;
   enabled: boolean;
+}
+
+export interface SkillOption {
+  id: string;
+  name: string;
+  description?: string;
 }
 
 /**
@@ -120,10 +125,21 @@ const EXTENSIONS: { value: Extension; label: string; description: string }[] = [
 ];
 
 /**
+ * AI Model configuration from backend
+ */
+export interface AIModelConfig {
+  id: string;
+  name: string;
+  builtinTools?: string[];
+  requiredEnvVars?: string[];
+  isAvailable?: boolean;
+}
+
+/**
  * Response from the /api/v1/configure endpoint
  */
 interface ConfigResponse {
-  models: unknown[];
+  models: AIModelConfig[];
   builtinTools: unknown[];
   mcpServers?: MCPServerConfig[];
 }
@@ -135,18 +151,31 @@ interface AgentConfigurationProps {
   wsUrl: string;
   baseUrl: string;
   agentName: string;
+  model: string;
   agents: readonly Agent[];
   selectedAgentId: string;
   isCreatingAgent?: boolean;
   createError?: string | null;
+  enableCodemode?: boolean;
+  allowDirectToolCalls?: boolean;
+  enableToolReranker?: boolean;
+  availableSkills?: SkillOption[];
+  selectedSkills?: string[];
+  selectedMcpServers?: string[];
   onAgentLibraryChange: (library: AgentLibrary) => void;
   onTransportChange: (transport: Transport) => void;
   onExtensionsChange: (extensions: Extension[]) => void;
   onWsUrlChange: (url: string) => void;
   onBaseUrlChange: (url: string) => void;
   onAgentNameChange: (name: string) => void;
+  onModelChange: (model: string) => void;
   onAgentSelect: (agentId: string) => void;
   onConnect: () => void;
+  onEnableCodemodeChange?: (enabled: boolean) => void;
+  onAllowDirectToolCallsChange?: (enabled: boolean) => void;
+  onEnableToolRerankerChange?: (enabled: boolean) => void;
+  onSelectedSkillsChange?: (skills: string[]) => void;
+  onSelectedMcpServersChange?: (servers: string[]) => void;
 }
 
 /**
@@ -161,18 +190,31 @@ export const AgentConfiguration: React.FC<AgentConfigurationProps> = ({
   wsUrl,
   baseUrl,
   agentName,
+  model,
   agents,
   selectedAgentId,
   isCreatingAgent = false,
   createError = null,
+  enableCodemode = false,
+  allowDirectToolCalls = false,
+  enableToolReranker = false,
+  availableSkills = [],
+  selectedSkills = [],
+  selectedMcpServers = [],
   onAgentLibraryChange,
   onTransportChange,
   onExtensionsChange,
   onWsUrlChange,
   onBaseUrlChange,
   onAgentNameChange,
+  onModelChange,
   onAgentSelect,
   onConnect,
+  onEnableCodemodeChange,
+  onAllowDirectToolCallsChange,
+  onEnableToolRerankerChange,
+  onSelectedSkillsChange,
+  onSelectedMcpServersChange,
 }) => {
   // Fetch MCP servers configuration from the backend
   const configQuery = useQuery<ConfigResponse>({
@@ -190,6 +232,33 @@ export const AgentConfiguration: React.FC<AgentConfigurationProps> = ({
   });
 
   const mcpServers = configQuery.data?.mcpServers || [];
+  const models = configQuery.data?.models || [];
+  const previewServers = selectedMcpServers.length
+    ? mcpServers.filter(server => selectedMcpServers.includes(server.id))
+    : [];
+  const skillsEnabled = selectedSkills.length > 0;
+
+  // Handle MCP server checkbox change
+  const handleMcpServerChange = (serverId: string, checked: boolean) => {
+    if (checked) {
+      onSelectedMcpServersChange?.([...selectedMcpServers, serverId]);
+    } else {
+      onSelectedMcpServersChange?.(
+        selectedMcpServers.filter(id => id !== serverId),
+      );
+    }
+  };
+
+  const handleSkillChange = (skillId: string, checked: boolean) => {
+    if (checked) {
+      onSelectedSkillsChange?.([...selectedSkills, skillId]);
+    } else {
+      onSelectedSkillsChange?.(selectedSkills.filter(id => id !== skillId));
+    }
+  };
+
+  // MCP servers are disabled for existing agents (new-agent only)
+  const mcpServersDisabled = selectedAgentId !== 'new-agent';
 
   // Determine which extensions are enabled based on transport
   const isExtensionEnabled = (ext: Extension): boolean => {
@@ -251,6 +320,46 @@ export const AgentConfiguration: React.FC<AgentConfigurationProps> = ({
         </FormControl.Caption>
       </FormControl>
 
+      <FormControl sx={{ marginBottom: 3 }}>
+        <FormControl.Label>Agent Name</FormControl.Label>
+        <TextInput
+          value={agentName}
+          onChange={e => onAgentNameChange(e.target.value)}
+          disabled={selectedAgentId !== 'new-agent'}
+          placeholder="demo-agent"
+          sx={{ width: '100%' }}
+        />
+        <FormControl.Caption>
+          The name of the agent to connect to
+        </FormControl.Caption>
+      </FormControl>
+
+      <FormControl sx={{ marginBottom: 3 }}>
+        <FormControl.Label>
+          {transport === 'acp' ? 'WebSocket URL' : 'Base URL'}
+        </FormControl.Label>
+        <TextInput
+          value={transport === 'acp' ? wsUrl : baseUrl}
+          onChange={e =>
+            transport === 'acp'
+              ? onWsUrlChange(e.target.value)
+              : onBaseUrlChange(e.target.value)
+          }
+          disabled={selectedAgentId !== 'new-agent'}
+          placeholder={
+            transport === 'acp'
+              ? 'ws://localhost:8000/api/v1/acp/ws'
+              : 'http://localhost:8000'
+          }
+          sx={{ width: '100%' }}
+        />
+        <FormControl.Caption>
+          {transport === 'acp'
+            ? 'The WebSocket endpoint of your agent-runtimes server'
+            : 'The base URL of your agent-runtimes server'}
+        </FormControl.Caption>
+      </FormControl>
+
       <Box sx={{ display: 'flex', gap: 3, marginBottom: 3 }}>
         <FormControl sx={{ flex: 1 }}>
           <FormControl.Label>Agent Library</FormControl.Label>
@@ -270,6 +379,31 @@ export const AgentConfiguration: React.FC<AgentConfigurationProps> = ({
                 {lib.disabled && ' (Coming Soon)'}
               </Select.Option>
             ))}
+          </Select>
+        </FormControl>
+
+        <FormControl sx={{ flex: 1 }}>
+          <FormControl.Label>Model</FormControl.Label>
+          <Select
+            value={model}
+            onChange={e => onModelChange(e.target.value)}
+            disabled={selectedAgentId !== 'new-agent' || models.length === 0}
+            sx={{ width: '100%' }}
+          >
+            {models.length === 0 ? (
+              <Select.Option value="">Loading models...</Select.Option>
+            ) : (
+              models.map(m => (
+                <Select.Option
+                  key={m.id}
+                  value={m.id}
+                  disabled={!m.isAvailable}
+                >
+                  {m.name}
+                  {!m.isAvailable && ' (API key required)'}
+                </Select.Option>
+              ))
+            )}
           </Select>
         </FormControl>
 
@@ -312,45 +446,125 @@ export const AgentConfiguration: React.FC<AgentConfigurationProps> = ({
         </FormControl>
       </Box>
 
-      <FormControl sx={{ marginBottom: 3 }}>
-        <FormControl.Label>
-          {transport === 'acp' ? 'WebSocket URL' : 'Base URL'}
-        </FormControl.Label>
-        <TextInput
-          value={transport === 'acp' ? wsUrl : baseUrl}
-          onChange={e =>
-            transport === 'acp'
-              ? onWsUrlChange(e.target.value)
-              : onBaseUrlChange(e.target.value)
-          }
-          disabled={selectedAgentId !== 'new-agent'}
-          placeholder={
-            transport === 'acp'
-              ? 'ws://localhost:8000/api/v1/acp/ws'
-              : 'http://localhost:8000'
-          }
-          sx={{ width: '100%' }}
-        />
-        <FormControl.Caption>
-          {transport === 'acp'
-            ? 'The WebSocket endpoint of your agent-runtimes server'
-            : 'The base URL of your agent-runtimes server'}
-        </FormControl.Caption>
-      </FormControl>
+      {/* Agent Capabilities Section */}
+      <Box
+        sx={{
+          marginBottom: 3,
+          padding: 3,
+          border: '1px solid',
+          borderColor: 'border.default',
+          borderRadius: 2,
+          backgroundColor: 'canvas.default',
+        }}
+      >
+        <Text sx={{ fontSize: 1, fontWeight: 'bold', display: 'block', mb: 2 }}>
+          Agent Capabilities
+        </Text>
+        <Box sx={{ display: 'flex', gap: 4 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <Checkbox
+              checked={enableCodemode}
+              disabled={selectedAgentId !== 'new-agent'}
+              onChange={e => onEnableCodemodeChange?.(e.target.checked)}
+            />
+            <Box>
+              <Text sx={{ fontSize: 1 }}>Codemode</Text>
+              <Text sx={{ fontSize: 0, color: 'fg.muted', display: 'block' }}>
+                Execute code to compose tools
+              </Text>
+            </Box>
+          </Box>
+        </Box>
+        {skillsEnabled && enableCodemode && (
+          <Flash variant="default" sx={{ mt: 3 }}>
+            <Text sx={{ fontSize: 0 }}>
+              Skills provide curated capabilities; Codemode composes tools with
+              Python for multi-step execution.
+            </Text>
+          </Flash>
+        )}
+        {enableCodemode && (
+          <Box sx={{ mt: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <Checkbox
+                checked={allowDirectToolCalls}
+                disabled={selectedAgentId !== 'new-agent'}
+                onChange={e => onAllowDirectToolCallsChange?.(e.target.checked)}
+              />
+              <Box>
+                <Text sx={{ fontSize: 1 }}>Allow direct tool calls</Text>
+                <Text sx={{ fontSize: 0, color: 'fg.muted', display: 'block' }}>
+                  Expose call_tool for simple, single-tool operations
+                </Text>
+              </Box>
+            </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <Checkbox
+                checked={enableToolReranker}
+                disabled={selectedAgentId !== 'new-agent'}
+                onChange={e => onEnableToolRerankerChange?.(e.target.checked)}
+              />
+              <Box>
+                <Text sx={{ fontSize: 1 }}>Enable tool reranker</Text>
+                <Text sx={{ fontSize: 0, color: 'fg.muted', display: 'block' }}>
+                  Reorder search results using the configured reranker
+                </Text>
+              </Box>
+            </Box>
+          </Box>
+        )}
+      </Box>
 
-      <FormControl sx={{ marginBottom: 3 }}>
-        <FormControl.Label>Agent Name</FormControl.Label>
-        <TextInput
-          value={agentName}
-          onChange={e => onAgentNameChange(e.target.value)}
-          disabled={selectedAgentId !== 'new-agent'}
-          placeholder="demo-agent"
-          sx={{ width: '100%' }}
-        />
-        <FormControl.Caption>
-          The name of the agent to connect to
-        </FormControl.Caption>
-      </FormControl>
+      <Box
+        sx={{
+          marginBottom: 3,
+          padding: 3,
+          border: '1px solid',
+          borderColor: 'border.default',
+          borderRadius: 2,
+          backgroundColor: 'canvas.default',
+        }}
+      >
+        <Text sx={{ fontSize: 1, fontWeight: 'bold', display: 'block', mb: 2 }}>
+          Skills
+        </Text>
+        {availableSkills.length === 0 ? (
+          <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
+            No skills available.
+          </Text>
+        ) : (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {availableSkills.map(skill => (
+              <Box
+                key={skill.id}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 2,
+                  padding: 2,
+                  borderRadius: 1,
+                  backgroundColor: 'canvas.subtle',
+                  opacity: selectedAgentId !== 'new-agent' ? 0.6 : 1,
+                }}
+              >
+                <Checkbox
+                  checked={selectedSkills.includes(skill.id)}
+                  disabled={selectedAgentId !== 'new-agent'}
+                  onChange={e => handleSkillChange(skill.id, e.target.checked)}
+                />
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  <Text sx={{ fontWeight: 'semibold' }}>{skill.name}</Text>
+                  {skill.description && (
+                    <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
+                      {skill.description}
+                    </Text>
+                  )}
+                </Box>
+              </Box>
+            ))}
+          </Box>
+        )}
+      </Box>
 
       {/* MCP Servers Section */}
       <Box
@@ -392,41 +606,105 @@ export const AgentConfiguration: React.FC<AgentConfigurationProps> = ({
             </Text>
           )}
 
+        {enableCodemode && (
+          <Flash variant="default" sx={{ marginBottom: 2 }}>
+            <Text sx={{ fontSize: 0 }}>
+              When Codemode is enabled, selected MCP servers are used to build
+              the Codemode tool registry (tools are exposed via Codemode meta
+              tools like search and execute_code).
+            </Text>
+          </Flash>
+        )}
+
+        {enableCodemode && (
+          <Box
+            sx={{
+              marginBottom: 2,
+              padding: 2,
+              borderRadius: 1,
+              border: '1px solid',
+              borderColor: 'border.default',
+              backgroundColor: 'canvas.subtle',
+            }}
+          >
+            <Text
+              sx={{ fontSize: 0, fontWeight: 'semibold', display: 'block' }}
+            >
+              Codemode registry preview
+            </Text>
+            <Text sx={{ fontSize: 0, color: 'fg.muted', mb: 1 }}>
+              {selectedMcpServers.length > 0
+                ? 'Using selected MCP servers'
+                : 'No servers selected — select servers to scope Codemode tools.'}
+            </Text>
+            {previewServers.length > 0 ? (
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                {previewServers.map(server => (
+                  <Text key={server.id} sx={{ fontSize: 0 }}>
+                    {server.name} — {server.tools.length} tools
+                  </Text>
+                ))}
+              </Box>
+            ) : (
+              <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
+                No servers selected.
+              </Text>
+            )}
+            <Text sx={{ fontSize: 0, color: 'fg.muted', mt: 2 }}>
+              Exposed meta-tools: list_tool_names, search_tools,
+              get_tool_details, list_servers, execute_code, call_tool (optional)
+            </Text>
+          </Box>
+        )}
+
         {mcpServers.length > 0 && (
-          <ActionList>
-            {mcpServers.map((server, index) => (
-              <React.Fragment key={server.id}>
-                {index > 0 && <ActionList.Divider />}
-                <ActionList.Item disabled>
-                  <ActionList.LeadingVisual>
-                    {server.isAvailable ? (
-                      <CheckIcon size={16} />
-                    ) : (
-                      <XIcon size={16} />
-                    )}
-                  </ActionList.LeadingVisual>
-                  <Box
-                    sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}
-                  >
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                      <Text sx={{ fontWeight: 'semibold' }}>{server.name}</Text>
-                      <Label
-                        variant={server.isAvailable ? 'success' : 'secondary'}
-                        size="small"
-                      >
-                        {server.isAvailable ? 'Available' : 'Not Available'}
-                      </Label>
-                    </Box>
-                    {server.tools.length > 0 && (
-                      <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
-                        Tools: {server.tools.map(t => t.name).join(', ')}
-                      </Text>
-                    )}
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {mcpServers.map(server => (
+              <Box
+                key={server.id}
+                sx={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 2,
+                  padding: 2,
+                  borderRadius: 1,
+                  backgroundColor: 'canvas.subtle',
+                  opacity: mcpServersDisabled || !server.isAvailable ? 0.6 : 1,
+                }}
+              >
+                <Checkbox
+                  checked={selectedMcpServers.includes(server.id)}
+                  disabled={mcpServersDisabled || !server.isAvailable}
+                  onChange={e =>
+                    handleMcpServerChange(server.id, e.target.checked)
+                  }
+                />
+                <Box
+                  sx={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 1,
+                    flex: 1,
+                  }}
+                >
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                    <Text sx={{ fontWeight: 'semibold' }}>{server.name}</Text>
+                    <Label
+                      variant={server.isAvailable ? 'success' : 'secondary'}
+                      size="small"
+                    >
+                      {server.isAvailable ? 'Available' : 'Not Available'}
+                    </Label>
                   </Box>
-                </ActionList.Item>
-              </React.Fragment>
+                  {server.tools.length > 0 && (
+                    <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
+                      Tools: {server.tools.map(t => t.name).join(', ')}
+                    </Text>
+                  )}
+                </Box>
+              </Box>
             ))}
-          </ActionList>
+          </Box>
         )}
       </Box>
 

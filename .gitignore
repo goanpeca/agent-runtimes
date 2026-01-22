@@ -197,3 +197,6 @@ dmypy.json
 
 # Include
 !**/.*ignore
+
+generated
+skills

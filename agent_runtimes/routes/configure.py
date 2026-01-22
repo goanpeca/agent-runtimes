@@ -6,10 +6,11 @@
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Path
 
 from agent_runtimes.mcp import get_available_tools, get_frontend_config, get_mcp_manager, get_mcp_toolsets_status, get_mcp_toolsets_info
 from agent_runtimes.types import FrontendConfig
+from agent_runtimes.context.usage import get_usage_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -83,3 +84,95 @@ async def get_toolsets_info() -> list[dict[str, Any]]:
         List of running MCP server information (sensitive data redacted).
     """
     return get_mcp_toolsets_info()
+
+
+@router.get("/agents/{agent_id}/context-details")
+async def get_agent_context_details(
+    agent_id: str = Path(
+        ...,
+        description="Agent ID to get context details for",
+    ),
+) -> dict[str, Any]:
+    """
+    Get context usage details for a specific agent.
+    
+    Returns context information including:
+    - Total tokens available (context window)
+    - Used tokens
+    - Breakdown by category (messages, tools, system, cache)
+    
+    Args:
+        agent_id: The unique identifier of the agent.
+        
+    Returns:
+        Context usage details for the agent.
+    """
+    tracker = get_usage_tracker()
+    return tracker.get_context_details(agent_id)
+
+
+@router.get("/agents/{agent_id}/context-snapshot")
+async def get_agent_context_snapshot_endpoint(
+    agent_id: str = Path(
+        ...,
+        description="Agent ID to get context snapshot for",
+    ),
+) -> dict[str, Any]:
+    """
+    Get current context snapshot for a specific agent.
+    
+    Returns the current context state including:
+    - System prompts and their token counts
+    - Message distribution (user/assistant)
+    - Total context usage vs context window
+    - Distribution data for visualization
+    
+    Args:
+        agent_id: The unique identifier of the agent.
+        
+    Returns:
+        Context snapshot with distribution data.
+    """
+    from ..context.snapshot import get_agent_context_snapshot
+    
+    snapshot = get_agent_context_snapshot(agent_id)
+    if snapshot is None:
+        return {
+            "error": f"Agent '{agent_id}' not found",
+            "agentId": agent_id,
+            "systemPrompts": [],
+            "systemPromptTokens": 0,
+            "messages": [],
+            "userMessageTokens": 0,
+            "assistantMessageTokens": 0,
+            "totalTokens": 0,
+            "contextWindow": 128000,
+            "distribution": {
+                "name": "Context",
+                "value": 0,
+                "children": [],
+            },
+        }
+    
+    return snapshot.to_dict()
+
+
+@router.post("/agents/{agent_id}/context-details/reset")
+async def reset_agent_context(
+    agent_id: str = Path(
+        ...,
+        description="Agent ID to reset context for",
+    ),
+) -> dict[str, str]:
+    """
+    Reset context usage statistics for an agent.
+    
+    Args:
+        agent_id: The unique identifier of the agent.
+        
+    Returns:
+        Confirmation message.
+    """
+    tracker = get_usage_tracker()
+    tracker.reset_agent(agent_id)
+    return {"status": "ok", "message": f"Context reset for agent '{agent_id}'"}

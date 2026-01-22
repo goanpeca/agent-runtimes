@@ -27,6 +27,16 @@ export {
 } from './base/ChatBase';
 export { AgentDetails, type AgentDetailsProps } from './AgentDetails';
 export {
+  ContextUsage,
+  type ContextUsageProps,
+  type ContextDetailsResponse,
+} from './ContextUsage';
+export {
+  ContextDistribution,
+  type ContextDistributionProps,
+  type ContextSnapshotResponse,
+} from './ContextDistribution';
+export {
   ToolApprovalDialog,
   useToolApprovalDialog,
   type ToolApprovalDialogProps,
