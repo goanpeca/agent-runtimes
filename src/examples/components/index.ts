@@ -11,7 +11,6 @@ export { HeaderControls } from './HeaderControls';
 export { FooterMetrics } from './FooterMetrics';
 export { TimeTravel } from './TimeTravel';
 export { LexicalEditor } from './LexicalEditor';
-export { Rating } from './Rating';
 export {
   AgentConfiguration,
   AGENT_LIBRARIES,

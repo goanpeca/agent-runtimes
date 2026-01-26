@@ -24,7 +24,6 @@ export const EXAMPLES: Record<
   AgentRuntimeCustomExample: () => import('./AgentRuntimeCustomExample'),
   AgentCodemodeMcpExample: () => import('./AgentCodemodeMcpExample'),
   AgentSpaceFormExample: () => import('./AgentSpaceFormExample'),
-  AgentSpaceHomeExample: () => import('./AgentSpaceHomeExample'),
   AgentRuntimeLexicalSidebarExample: () =>
     import('./AgentRuntimeLexicalSidebarExample'),
   AgentRuntimeNotebookExample: () => import('./AgentRuntimeNotebookExample'),
