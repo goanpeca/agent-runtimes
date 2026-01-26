@@ -1,0 +1,1333 @@
+---
+title: Identity
+---
+
+# Identity
+
+AI agents that act on behalf of users need secure identity and authorization mechanisms to access external services like GitHub, Gmail, Kaggle, or enterprise APIs. This section describes the identity strategy for Agent Runtimes.
+
+## Overview
+
+Agent identity is more complex than traditional application identity because:
+
+1. **Delegation**: Agents act *on behalf of* users, requiring clear authorization chains
+2. **Multi-service access**: A single agent may need tokens for GitHub, Gmail, Slack, and more
+3. **Dynamic tool discovery**: Agents discover MCP servers at runtime, requiring dynamic credential management
+4. **Autonomy vs. control**: Balancing agent autonomy with user oversight and consent
+5. **Programmatic execution**: OAuth tokens must flow securely to skill scripts and codemode execution
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         User (Resource Owner)                       │
+└─────────────────────────────────────────────────────────────────────┘
+                                    │
+                         OAuth 2.1 Authorization
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Agent Runtimes Server                        │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐  │
+│  │  Token Manager  │  │  Agent Context  │  │  Tool Executors     │  │
+│  │  (OAuth flows)  │  │  (User identity)│  │  (Token injection)  │  │
+│  └────────┬────────┘  └────────┬────────┘  └──────────┬──────────┘  │
+└───────────┼────────────────────┼───────────────────────┼────────────┘
+            │                    │                       │
+            ▼                    ▼                       ▼
+     ┌──────────────┐     ┌──────────────┐       ┌──────────────┐
+     │   GitHub     │     │   Gmail      │       │  Skills &    │
+     │   API        │     │   API        │       │  Code Mode   │
+     └──────────────┘     └──────────────┘       └──────────────┘
+```
+
+## Identity Types
+
+### Type 1: User-Delegated Access (OAuth 2.1)
+
+**Use case**: Agent accesses user's GitHub repositories, Gmail, or other personal services.
+
+The agent acts as an OAuth client, obtaining tokens that represent the user's delegated authorization. This follows the standard [OAuth 2.1](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-12) authorization code flow with [PKCE](https://oauth.net/2/pkce/) (Proof Key for Code Exchange).
+
+:::info Security Architecture
+Based on the agent identity landscape, there are different approaches depending on your trust model:
+
+| Scenario | Recommended Approach | Agent Runtimes Support |
+|----------|---------------------|----------------------|
+| **Public agents** (internet-facing) | PKCE + DCR | ✅ Both implemented |
+| **Internal agents** (within org) | SPIFFE/SPIRE | 🔜 Planned |
+| **Service-to-service** | Client Credentials | ✅ Conceptual support |
+
+The implementation provides:
+- **PKCE** for secure authorization code flows with public clients
+- **DCR** (Dynamic Client Registration) for agents that discover OAuth providers at runtime
+- **Identity Context** for automatic token injection into skill script execution
+:::
+
+```python
+# User initiates OAuth flow through the UI
+# Agent receives delegated access token
+agent_context = AgentContext(
+    user_id="user-123",
+    oauth_tokens={
+        "github": GitHubToken(access_token="gho_...", scopes=["repo", "read:user"]),
+        "gmail": GmailToken(access_token="ya29...", scopes=["gmail.readonly"]),
+    }
+)
+
+# Agent tools use these tokens
+@agent.tool
+async def list_repos(ctx: RunContext[AgentContext]) -> list[dict]:
+    token = ctx.deps.oauth_tokens["github"]
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            "https://api.github.com/user/repos",
+            headers={"Authorization": f"Bearer {token.access_token}"}
+        )
+        return response.json()
+```
+
+### Type 2: MCP Server Authentication
+
+**Use case**: Agent connects to an MCP server that requires OAuth authentication (e.g., [Kaggle MCP](https://www.kaggle.com/docs/mcp)).
+
+MCP servers follow the [MCP Authorization Specification](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization) based on OAuth 2.1.
+
+```json
+{
+  "mcpServers": {
+    "kaggle": {
+      "url": "https://www.kaggle.com/mcp",
+      "auth": {
+        "type": "oauth2",
+        "clientId": "your-client-id",
+        "scopes": ["datasets:read", "notebooks:execute"]
+      }
+    }
+  }
+}
+```
+
+When the agent invokes a Kaggle MCP tool, the runtime:
+1. Checks if a valid token exists for this user + MCP server
+2. If not, initiates OAuth flow (user sees consent screen)
+3. Stores the token securely
+4. Attaches token to MCP requests
+
+### Type 3: Agent-to-Agent Communication (SPIFFE/SPIRE)
+
+**Use case**: Internal agents communicating within your organization's infrastructure.
+
+For workload-to-workload identity within a trust domain, use [SPIFFE](https://spiffe.io) (Secure Production Identity Framework for Everyone):
+
+```python
+from agent_runtimes.identity import SPIFFEIdentity
+
+# Agent obtains its SVID (SPIFFE Verifiable Identity Document)
+identity = SPIFFEIdentity()
+svid = await identity.get_x509_svid()
+
+# Use SVID for mutual TLS with other agents
+async with identity.create_secure_channel("spiffe://acme.com/agents/data-processor") as channel:
+    response = await channel.request({"action": "process_data", "payload": data})
+```
+
+SPIFFE provides:
+- **Automatic identity**: No static credentials—workloads receive short-lived certificates
+- **Zero-trust**: Every request is authenticated via mutual TLS
+- **Cross-platform**: Works with Kubernetes, VMs, bare metal
+
+### Type 4: Service Account Access
+
+**Use case**: Agent accesses backend services using application-level credentials.
+
+For server-to-server communication where no user is involved, use the OAuth 2.1 Client Credentials flow:
+
+```python
+from agent_runtimes.identity import ServiceCredentials
+
+# Configure service account
+service = ServiceCredentials(
+    client_id=os.getenv("ANALYTICS_CLIENT_ID"),
+    client_secret=os.getenv("ANALYTICS_CLIENT_SECRET"),
+    token_endpoint="https://auth.example.com/oauth/token",
+    scopes=["analytics:read"]
+)
+
+# Agent uses service token (auto-refreshed)
+@agent.tool
+async def get_metrics(ctx: RunContext) -> dict:
+    token = await service.get_token()
+    # Use token for API calls
+```
+
+## Provider Setup Guides
+
+This section provides step-by-step instructions for setting up identity with common providers.
+
+### Kaggle
+
+Kaggle provides access to datasets, models, competitions, and notebooks. Unlike GitHub, **Kaggle does not offer public OAuth app registration**, so Agent Runtimes uses **token-based authentication**.
+
+:::info Authentication Model
+Kaggle uses two authentication methods:
+- **MCP OAuth** — Handled automatically by `mcp-remote` (browser-based login on first tool call)
+- **API Token** — Manual token for Agent Runtimes identity integration
+
+For the Agent Runtimes UI identity features, use the **API Token** method described below.
+:::
+
+#### Step 1: Generate Your Kaggle API Token
+
+1. Go to **[kaggle.com/settings/account](https://www.kaggle.com/settings/account)**
+2. Scroll down to the **API** section
+3. Click **Create New Token**
+4. A file `kaggle.json` will download containing your credentials:
+   ```json
+   {"username":"your-username","key":"your-api-key"}
+   ```
+5. The `key` value is your `KAGGLE_TOKEN`
+
+:::warning Token Security
+- Never commit your token to version control
+- The token provides full access to your Kaggle account
+- You can revoke and regenerate tokens anytime from the settings page
+:::
+
+#### Step 2: Connect via the UI
+
+The Agent Runtimes UI provides a built-in flow for connecting Kaggle:
+
+1. **Open the Agent Configuration** panel
+2. **Find the "Connected Accounts" section** — This section always appears and shows available identity providers
+3. **Click "Connect Kaggle"** — The card expands to show a token input form
+4. **Click "Get API Key"** — Opens [kaggle.com/settings/account](https://www.kaggle.com/settings/account) in a new tab
+5. **Paste your API key** from `kaggle.json` into the input field
+6. **Press Enter or click "Connect"** — The token is securely stored in your browser's localStorage
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Connected Accounts                                     │
+├─────────────────────────────────────────────────────────┤
+│  ┌───────────────────────────────────────────────────┐  │
+│  │ 🔑 Connect Kaggle                              [+] │  │
+│  │    Access Kaggle datasets and notebooks           │  │
+│  └───────────────────────────────────────────────────┘  │
+│                          ↓ Click to expand              │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │ Get API Key: Get your API key from Account page   │  │
+│  │ ┌─────────────────────────┐ ┌─────────┐ ┌───┐    │  │
+│  │ │ Enter your Kaggle API…  │ │ Connect │ │ ✕ │    │  │
+│  │ └─────────────────────────┘ └─────────┘ └───┘    │  │
+│  └───────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────┘
+```
+
+After connecting, the card shows:
+- ✅ **Connected** status badge
+- **API Key** label (to distinguish from OAuth connections)
+- **Disconnect** option to remove the token
+
+**Token Persistence:** The token is stored in `localStorage` under the key `datalayer-agent-identities` and persists across page reloads. When you reload the page, your Kaggle connection is automatically restored.
+
+#### Step 3: Token Flow to Backend
+
+When you send a message to the agent:
+
+1. **Frontend collects tokens** — All connected identities (OAuth and token-based) are gathered
+2. **Tokens sent in request body** — Included as `identities` array in the AG-UI/Vercel AI request
+3. **Backend extracts identities** — The transport layer reads `body.identities`
+4. **Context variable set** — `set_request_identities()` stores tokens in a `contextvars.ContextVar`
+5. **Tools access tokens** — `get_identity_env()` returns `{"KAGGLE_TOKEN": "your-key"}`
+
+```python
+# Inside your skill or codemode execution:
+import os
+kaggle_token = os.environ.get("KAGGLE_TOKEN")  # Available during execution
+```
+
+#### Step 4: Programmatic Configuration (Optional)
+
+For build-time configuration, set the token as an environment variable:
+
+```bash
+# Frontend .env
+VITE_KAGGLE_TOKEN=your-api-key-from-kaggle-json
+```
+
+```tsx
+import { AgentSpaceFormExample } from '@datalayer/agent-runtimes';
+
+// Token auto-connects on component mount
+<AgentSpaceFormExample
+  identityProviders={{
+    kaggle: {
+      type: 'token',
+      token: import.meta.env.VITE_KAGGLE_TOKEN,
+      displayName: 'Kaggle',
+    },
+  }}
+/>
+```
+
+For the backend (Python):
+
+```bash
+# Backend .env
+KAGGLE_TOKEN=your-api-key-from-kaggle-json
+```
+
+#### Kaggle MCP Server Configuration
+
+For MCP tools, configure with token authentication:
+
+```json
+{
+  "mcpServers": {
+    "kaggle": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://www.kaggle.com/mcp",
+        "--header",
+        "Authorization: Bearer ${KAGGLE_TOKEN}"
+      ]
+    }
+  }
+}
+```
+
+Alternatively, let `mcp-remote` handle OAuth automatically (triggers browser login):
+
+```json
+{
+  "mcpServers": {
+    "kaggle": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "https://www.kaggle.com/mcp"]
+    }
+  }
+}
+```
+
+#### Available Kaggle Resources
+
+| Resource | Description |
+|----------|-------------|
+| **Datasets** | Search, download, and explore datasets |
+| **Notebooks** | Create, run, and manage Kaggle notebooks |
+| **Models** | Access and use Kaggle models |
+| **Competitions** | Browse competitions, download data, submit predictions |
+
+---
+
+### GitHub
+
+For GitHub identity, you can use either a **GitHub OAuth App** or a **GitHub App**. See [GitHub OAuth App Creation](#github-oauth-app) below for detailed setup instructions.
+
+:::warning GitHub Does NOT Support DCR
+GitHub does not support OAuth 2.0 Dynamic Client Registration (RFC 7591). You must:
+1. **Pre-register** your app manually in GitHub Developer Settings
+2. Use the **same client_id** for all users
+3. Obtain **per-user access tokens** via the standard OAuth flow
+4. Store tokens mapped to your internal user identity
+:::
+
+:::info GitHub OAuth App vs GitHub App - Which to Choose?
+
+| Feature | OAuth App | GitHub App |
+|---------|-----------|------------|
+| **Setup complexity** | Simple | More complex |
+| **Permissions** | Broad scopes | Fine-grained per-resource |
+| **Installation model** | Per-user OAuth | Per-user/org installation |
+| **Token lifetime** | Long-lived | Short-lived (1 hour) |
+| **Best for** | Simple auth, read-only | Agents acting on repos |
+
+**For AI agents**: Use a **GitHub App** (recommended) for creating repos, opening PRs, or acting repeatedly on user's behalf with fine-grained permissions.
+
+**For simple authentication**: Use an **OAuth App** for basic identity verification or read-only access.
+
+Agent Runtimes currently supports OAuth Apps. GitHub App support is planned.
+:::
+
+#### Configuration
+
+**Environment Variables:**
+
+```bash
+# .env (for Vite-based projects)
+
+# Frontend (Vite) - used by React components
+VITE_GITHUB_CLIENT_ID=your_github_client_id_here
+
+# Backend (Python) - used by token exchange endpoint
+GITHUB_CLIENT_ID=your_github_client_id_here
+GITHUB_CLIENT_SECRET=your_github_client_secret_here  # Required for GitHub!
+```
+
+:::warning Both Frontend AND Backend Need the Client ID
+The OAuth flow requires the client ID in two places:
+1. **Frontend** (`VITE_GITHUB_CLIENT_ID`) - to build the authorization URL
+2. **Backend** (`GITHUB_CLIENT_ID`) - to exchange the code for a token
+
+GitHub doesn't support CORS on their token endpoint, so the backend proxies the token exchange.
+:::
+
+**Frontend (React):**
+
+```tsx
+import { IdentityConnect } from '@datalayer/agent-runtimes';
+
+function App() {
+  return (
+    <IdentityConnect
+      providers={{
+        github: {
+          clientId: import.meta.env.VITE_GITHUB_CLIENT_ID,
+          scopes: ['read:user', 'user:email', 'repo'],
+        },
+      }}
+    />
+  );
+}
+```
+
+**Backend (Python):**
+
+```python
+import os
+
+OAUTH_PROVIDERS = {
+    "github": {
+        "client_id": os.getenv("GITHUB_CLIENT_ID"),
+        "client_secret": os.getenv("GITHUB_CLIENT_SECRET"),
+        "authorization_endpoint": "https://github.com/login/oauth/authorize",
+        "token_endpoint": "https://github.com/login/oauth/access_token",
+        "userinfo_endpoint": "https://api.github.com/user",
+    }
+}
+```
+
+#### GitHub OAuth Scopes Reference
+
+| Scope | Access | Use Case |
+|-------|--------|----------|
+| `read:user` | Read user profile | Basic identity verification |
+| `user:email` | Read user email | Contact information |
+| `repo` | Full repository access | Read/write code, issues, PRs |
+| `public_repo` | Public repositories only | Read/write public repos |
+| `repo:status` | Commit status | CI/CD integrations |
+| `read:org` | Read org membership | Organization-aware features |
+| `gist` | Create/read gists | Code snippet sharing |
+
+**Recommended minimum scopes**: `read:user`, `user:email`
+
+**For repository access**: Add `repo` (private) or `public_repo` (public only)
+
+#### Troubleshooting
+
+| Error | Solution |
+|-------|----------|
+| "The redirect_uri is not valid" | Ensure callback URL in GitHub settings exactly matches your app's URL (check trailing slashes, protocol) |
+| "Bad credentials" on API calls | Token may have expired—implement token refresh; or scopes may be insufficient |
+| CORS errors | GitHub's token endpoint doesn't support CORS—use the backend `/api/v1/identity/oauth/token` endpoint |
+
+---
+
+### Google
+
+For Google/Gmail identity:
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a project or select an existing one
+3. Navigate to **APIs & Services** → **Credentials**
+4. Click **Create Credentials** → **OAuth client ID**
+5. Select **Web application**
+6. Add authorized redirect URIs (same pattern as GitHub)
+7. Copy the Client ID and Client Secret
+
+```tsx
+<IdentityConnect
+  providers={{
+    google: {
+      clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID,
+      scopes: ['openid', 'profile', 'email', 'https://www.googleapis.com/auth/gmail.readonly'],
+    },
+  }}
+/>
+```
+
+---
+
+## OAuth App Creation
+
+This section provides detailed instructions for creating OAuth applications with providers that require manual registration.
+
+### GitHub OAuth App
+
+#### Step 1: Create the OAuth App
+
+1. Go to [GitHub Developer Settings](https://github.com/settings/developers)
+2. Click **OAuth Apps** in the left sidebar
+3. Click **New OAuth App** (or **Register a new application**)
+
+#### Step 2: Configure the Application
+
+Fill in the registration form:
+
+| Field | Value | Notes |
+|-------|-------|-------|
+| **Application name** | `My Agent App` | User-visible name shown during authorization |
+| **Homepage URL** | `http://localhost:3000` | Your application's homepage (can be localhost for dev) |
+| **Application description** | Optional | Helps users understand what your app does |
+| **Authorization callback URL** | `http://localhost:3000/index-examples.html` | **Critical**: Must match the exact page URL |
+| **Enable Device Flow** | ❌ Unchecked | Not needed for browser-based flows |
+
+:::warning Callback URL Must Match Your Page URL
+The callback URL redirects back to **the same page** that initiated the OAuth flow:
+
+| Environment | Callback URL |
+|-------------|--------------|
+| Agent Runtimes examples | `http://localhost:3000/index-examples.html` |
+| Custom app at root | `http://localhost:3000/` |
+| Production | `https://myapp.example.com/your-app-page.html` |
+
+The identity module automatically uses `window.location.pathname` as the callback URL.
+:::
+
+#### Step 3: Get Your Credentials
+
+After creating the app:
+
+1. Copy the **Client ID** - this is public and safe to include in frontend code
+2. Click **Generate a new client secret** - **required** for GitHub (even with PKCE)
+
+:::warning Client Secret Required for GitHub
+GitHub OAuth Apps **require a client secret** for the token exchange, even when using PKCE. Store it securely on the backend.
+:::
+
+#### Step 4: Configure Environment
+
+Create a `.env` file:
+
+```bash
+# Frontend (Vite)
+VITE_GITHUB_CLIENT_ID=your_github_client_id_here
+
+# Backend (Python)
+GITHUB_CLIENT_ID=your_github_client_id_here
+GITHUB_CLIENT_SECRET=your_github_client_secret_here
+```
+
+#### GitHub Settings FAQ
+
+**Do I need to enable "Enable Device Flow"?**
+
+No. Device Flow is for devices that can't easily display a web browser (smart TVs, CLI tools, IoT devices). Agent Runtimes uses the standard **Authorization Code flow** with browser redirects or popups.
+
+**What about "Require PKCE for OAuth Apps"?**
+
+If GitHub offers this option, you can enable it for extra security. Agent Runtimes always uses PKCE regardless of whether GitHub requires it.
+
+## Dynamic Client Registration (DCR)
+
+Dynamic Client Registration allows OAuth clients to register themselves automatically with authorization servers, without manual app creation. This is essential for AI agents that discover OAuth-protected services at runtime.
+
+### When to Use DCR
+
+| Scenario | Use DCR? | Notes |
+|----------|----------|-------|
+| **Known providers** (GitHub, Google) | ❌ No | These don't support DCR; use manual registration |
+| **MCP servers** with OAuth | ✅ Yes | Agent discovers MCP servers dynamically |
+| **Enterprise IdPs** (Okta, Auth0) | ✅ Maybe | Check if DCR is enabled |
+| **OpenID Connect providers** | ✅ Yes | Most OIDC providers support DCR |
+
+### How DCR Works
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Dynamic Client Registration Flow                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+1. Agent discovers OAuth provider
+   ┌─────────┐                    ┌─────────────────────┐
+   │  Agent  │ ───────────────▶   │ /.well-known/oauth- │
+   └─────────┘   GET metadata     │ authorization-server│
+                                  └─────────────────────┘
+
+2. Agent registers itself dynamically
+   ┌─────────┐                    ┌─────────────────────┐
+   │  Agent  │ ───────────────▶   │ /register           │
+   └─────────┘   POST client      │ (DCR endpoint)      │
+                 metadata         └─────────────────────┘
+                                           │
+                 ◀─────────────────────────┘
+                 Returns: client_id, client_secret (optional)
+
+3. Agent uses registered credentials for OAuth
+   ┌─────────┐                    ┌─────────────────────┐
+   │  Agent  │ ───────────────▶   │ /authorize          │
+   └─────────┘   Standard OAuth   │ (with new client_id)│
+                 + PKCE           └─────────────────────┘
+```
+
+### Using DCR in Agent Runtimes
+
+#### Discovering and Registering
+
+```typescript
+import { 
+  discoverAuthorizationServer, 
+  supportsDCR,
+  getOrCreateDynamicClient,
+  dynamicClientToProviderConfig,
+} from '@datalayer/agent-runtimes';
+
+// Example: Agent discovers a new MCP server that requires OAuth
+async function connectToMcpServer(mcpServerUrl: string) {
+  // 1. Discover the authorization server metadata
+  const issuerUrl = 'https://auth.example.com';
+  const metadata = await discoverAuthorizationServer(issuerUrl);
+  
+  if (!metadata) {
+    throw new Error('Could not discover OAuth server');
+  }
+  
+  // 2. Check if DCR is supported
+  if (!supportsDCR(metadata)) {
+    throw new Error('Server does not support Dynamic Client Registration');
+  }
+  
+  // 3. Register dynamically (or retrieve existing registration)
+  const client = await getOrCreateDynamicClient(issuerUrl, {
+    clientName: 'My AI Agent',
+    redirectUris: ['http://localhost:3000/oauth/callback'],
+    scopes: ['openid', 'profile', 'mcp:tools'],
+  });
+  
+  console.log('Registered client:', client.clientId);
+  
+  // 4. Convert to provider config for use with identity system
+  const providerConfig = dynamicClientToProviderConfig(client, 'Example Service');
+  
+  // 5. Now use standard OAuth flow with the dynamic client
+  // The identity system will use client.clientId for authorization
+}
+```
+
+#### Managing Dynamic Clients
+
+```typescript
+import {
+  loadDynamicClient,
+  getAllDynamicClients,
+  removeDynamicClient,
+  clearAllDynamicClients,
+} from '@datalayer/agent-runtimes';
+
+// Load a specific client
+const client = loadDynamicClient('https://auth.example.com');
+
+// List all registered clients
+const allClients = getAllDynamicClients();
+console.log(`Registered with ${allClients.length} OAuth providers`);
+
+// Remove a client (useful when revoking access)
+removeDynamicClient('https://auth.example.com');
+
+// Clear all (useful for testing or user logout)
+clearAllDynamicClients();
+```
+
+### DCR Request Format
+
+When Agent Runtimes registers a client, it sends a request like this:
+
+```json
+{
+  "redirect_uris": ["http://localhost:3000/oauth/callback"],
+  "client_name": "Agent Runtimes Client",
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "token_endpoint_auth_method": "none"
+}
+```
+
+The `token_endpoint_auth_method: "none"` indicates a **public client** that uses PKCE instead of a client secret.
+
+### DCR Response
+
+The authorization server responds with:
+
+```json
+{
+  "client_id": "dynamically-generated-id",
+  "client_secret": "optional-secret",
+  "client_secret_expires_at": 0,
+  "registration_access_token": "token-for-updates",
+  "registration_client_uri": "https://auth.example.com/clients/dynamically-generated-id"
+}
+```
+
+Agent Runtimes stores this information locally for future use, so re-registration isn't needed on every request.
+
+### Providers That Support DCR
+
+| Provider | DCR Support | Notes |
+|----------|-------------|-------|
+| **Okta** | ✅ Yes | `/.well-known/openid-configuration` |
+| **Auth0** | ✅ Yes | `/.well-known/openid-configuration` |
+| **Keycloak** | ✅ Yes | `/.well-known/openid-configuration` |
+| **Azure AD** | ⚠️ Limited | Tenant-admin only, requires special configuration |
+| **GitHub** | ❌ No | Manual OAuth App or GitHub App registration |
+| **Google** | ❌ No | Manual registration via Google Cloud Console |
+| **Kaggle** | 🔜 TBD | Check MCP server documentation |
+
+:::note Most Consumer Providers Don't Support DCR
+GitHub is not unusual here. Most consumer-facing OAuth providers (GitHub, Google, Facebook, etc.) require manual app registration for security and abuse prevention reasons.
+
+DCR is primarily useful for:
+- Enterprise identity providers (Okta, Auth0)
+- MCP servers that implement their own OAuth
+- Multi-tenant SaaS with customer-provided IdPs
+:::
+
+### Security Considerations
+
+:::warning DCR Security
+- **Protected endpoints**: Some servers require an initial access token to register clients. Use the `initialAccessToken` option.
+- **Client secrets**: Dynamic clients may receive secrets that should be stored securely.
+- **Expiration**: Client secrets may expire; check `client_secret_expires_at` and re-register when needed.
+- **Scope validation**: Servers may grant fewer scopes than requested; always check the response.
+:::
+
+## Implementation Details
+
+### Type 1: OAuth 2.1 Foundation
+
+The OAuth 2.1 implementation consists of the following components:
+
+```
+agent_runtimes/
+  identity/
+    __init__.py
+    oauth/
+      client.py          # OAuth client implementation
+      tokens.py          # Token storage and refresh
+      pkce.py            # PKCE utilities
+      discovery.py       # Authorization server metadata (RFC 8414)
+      dcr.py             # Dynamic Client Registration (RFC 7591)
+    providers/
+      github.py          # GitHub OAuth configuration
+      google.py          # Google/Gmail OAuth configuration
+      kaggle.py          # Kaggle OAuth configuration
+      generic.py         # Generic OAuth provider
+```
+
+#### Token Storage
+
+Tokens must be stored securely with:
+- **Encryption at rest**: AES-256 encryption for stored tokens
+- **User scoping**: Tokens are always associated with a specific user
+- **Automatic refresh**: Background refresh before expiration
+- **Revocation support**: Clear tokens on user logout or revocation
+
+```python
+class TokenStore:
+    """Secure token storage with automatic refresh."""
+    
+    async def store_token(
+        self,
+        user_id: str,
+        provider: str,
+        token: OAuthToken,
+    ) -> None:
+        """Store encrypted token for user."""
+        
+    async def get_token(
+        self,
+        user_id: str,
+        provider: str,
+    ) -> OAuthToken | None:
+        """Get token, refreshing if needed."""
+        
+    async def revoke_token(
+        self,
+        user_id: str,
+        provider: str,
+    ) -> None:
+        """Revoke and delete token."""
+```
+
+#### Dynamic Client Registration
+
+For MCP servers the agent hasn't seen before, the frontend implements [RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591) Dynamic Client Registration. See the [DCR section](#dynamic-client-registration-dcr) above for full documentation.
+
+The backend Python equivalent:
+
+```python
+from agent_runtimes.identity.dcr import (
+    discover_authorization_server,
+    register_client,
+    get_or_create_dynamic_client,
+)
+
+# Discover and register with a new OAuth provider
+async def connect_to_new_provider(issuer_url: str) -> DynamicClient:
+    """Register with an OAuth provider discovered at runtime."""
+    return await get_or_create_dynamic_client(
+        issuer_url=issuer_url,
+        client_name="My AI Agent",
+        redirect_uris=["http://localhost:3000/oauth/callback"],
+        scopes=["openid", "profile"],
+    )
+```
+
+### Type 2: MCP Authorization Integration
+
+The MCP client handles OAuth authentication automatically:
+
+```python
+class AuthenticatedMCPClient:
+    """MCP client with automatic OAuth handling."""
+    
+    def __init__(
+        self,
+        server_url: str,
+        token_store: TokenStore,
+        user_id: str,
+    ):
+        self.server_url = server_url
+        self.token_store = token_store
+        self.user_id = user_id
+        
+    async def call_tool(
+        self,
+        tool_name: str,
+        arguments: dict,
+    ) -> Any:
+        # Get or refresh token
+        token = await self.token_store.get_token(
+            self.user_id,
+            provider=self._get_provider_key()
+        )
+        
+        if token is None:
+            # Trigger OAuth flow
+            raise AuthorizationRequired(
+                provider=self._get_provider_key(),
+                auth_url=await self._get_auth_url(),
+            )
+        
+        # Call MCP tool with authorization header
+        headers = {"Authorization": f"Bearer {token.access_token}"}
+        return await self._execute_tool(tool_name, arguments, headers)
+```
+
+### Type 3: Token Broker Architecture (Advanced)
+
+For production deployments with many connectors, a centralized token broker is recommended:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Token Broker                                 │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐  │
+│  │  Token Vault    │  │  Policy Engine  │  │  Audit Logger       │  │
+│  │  (encrypted)    │  │  (scopes/limits)│  │  (compliance)       │  │
+│  └────────┬────────┘  └────────┬────────┘  └──────────┬──────────┘  │
+└───────────┼────────────────────┼───────────────────────┼────────────┘
+            │                    │                       │
+     ┌──────┴──────┐      ┌──────┴──────┐        ┌──────┴──────┐
+     │   Agent 1   │      │   Agent 2   │        │   Agent N   │
+     └─────────────┘      └─────────────┘        └─────────────┘
+```
+
+Benefits:
+- **Centralized governance**: Admins control all token policies
+- **Automatic rotation**: Tokens are refreshed before expiry
+- **Audit trail**: Every token use is logged
+- **Scoped access**: Agents only see tokens they're authorized for
+
+## Security Best Practices
+
+### 1. Use PKCE for All OAuth Flows
+
+All authorization code flows MUST use [PKCE](https://oauth.net/2/pkce/) (Proof Key for Code Exchange):
+
+```python
+import secrets
+import hashlib
+import base64
+
+def generate_pkce_pair() -> tuple[str, str]:
+    """Generate PKCE code verifier and challenge."""
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(code_verifier.encode()).digest()
+    ).decode().rstrip("=")
+    return code_verifier, code_challenge
+```
+
+### 2. Minimize Token Lifetimes
+
+- **Access tokens**: 1 hour maximum
+- **Refresh tokens**: 7 days maximum, with rotation on use
+- **MCP session tokens**: Scope to single session when possible
+
+### 3. Request Minimum Scopes
+
+```python
+# ❌ Don't request broad scopes
+scopes = ["repo", "user", "admin:org"]
+
+# ✅ Request only what's needed
+scopes = ["repo:read", "user:email"]
+```
+
+### 4. Implement Token Revocation
+
+When a user disconnects a service or logs out:
+
+```python
+async def disconnect_provider(user_id: str, provider: str) -> None:
+    """Revoke tokens and clean up."""
+    token = await token_store.get_token(user_id, provider)
+    if token:
+        # Revoke at provider
+        await provider_client.revoke_token(token)
+        # Delete locally
+        await token_store.delete_token(user_id, provider)
+```
+
+### 5. Secure Token Storage
+
+Never store tokens in:
+- ❌ Environment variables (except for local development)
+- ❌ Browser localStorage/sessionStorage
+- ❌ Unencrypted databases
+- ❌ Log files
+
+Instead use:
+- ✅ Encrypted database columns
+- ✅ Hardware security modules (HSM) for production
+- ✅ Secret managers (Vault, AWS Secrets Manager, GCP Secret Manager)
+
+## UI Integration
+
+The Agent Runtimes React components support OAuth flows out of the box:
+
+```tsx
+import { ChatBase, useOAuthConnect } from '@datalayer/agent-runtimes';
+
+function AgentChat() {
+  const { connect, isConnecting, connectedProviders } = useOAuthConnect();
+  
+  return (
+    <div>
+      {/* Show connection status */}
+      <div className="providers">
+        <button 
+          onClick={() => connect('github')}
+          disabled={connectedProviders.includes('github')}
+        >
+          {connectedProviders.includes('github') ? '✓ GitHub Connected' : 'Connect GitHub'}
+        </button>
+        <button onClick={() => connect('kaggle')}>
+          Connect Kaggle
+        </button>
+      </div>
+      
+      {/* Chat component handles authorization-required responses */}
+      <ChatBase
+        onAuthorizationRequired={({ provider, authUrl }) => {
+          // Open OAuth popup
+          window.open(authUrl, 'oauth', 'width=600,height=800');
+        }}
+      />
+    </div>
+  );
+}
+```
+
+## Identity in Programmatic Tool Execution
+
+When agents execute programmatic tools (skills and codemode's `execute_code`) that require access to external services (like GitHub repositories), the OAuth tokens obtained via the identity system are automatically made available to the execution environment.
+
+### Overview
+
+Agent Runtimes supports two types of programmatic tool execution:
+
+| Execution Type | Description | Use Case |
+|----------------|-------------|----------|
+| **Skills** | Standalone Python scripts executed via `LocalPythonExecutor` or `SandboxExecutor` | Predefined, reusable automation scripts |
+| **Code Mode** | Dynamic Python code executed via `CodeModeExecutor` | Ad-hoc code that composes MCP tools |
+
+Both execution environments automatically receive OAuth tokens as environment variables when identities are connected.
+
+### How It Works
+
+The identity-to-tool flow works as follows:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     Identity → Programmatic Tool Execution Flow             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Frontend (React):
+  1. User clicks "Connect GitHub" → OAuth flow completes
+  2. Token stored in Zustand identity store
+  3. useConnectedIdentities() retrieves connected identities
+  4. Chat component passes identities to VercelAIAdapter.sendMessage()
+  5. Adapter includes identities in request body
+
+Backend (Python):
+  6. vercel_ai.py extracts identities from request body
+  7. IdentityContextManager sets context variable for request scope
+  8. During tool execution, executor calls get_identity_env()
+  9. Returns {"GITHUB_TOKEN": "..."} merged into execution environment
+  10. Code accesses via os.environ["GITHUB_TOKEN"]
+```
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Frontend                                        │
+│  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────────┐   │
+│  │ Identity Store  │────▶│ Chat Component  │────▶│ VercelAIAdapter     │   │
+│  │ (Zustand)       │     │ (connectedIds)  │     │ (identities body)   │   │
+│  └─────────────────┘     └─────────────────┘     └──────────┬──────────┘   │
+└──────────────────────────────────────────────────────────────┼──────────────┘
+                                                               │
+                                                    HTTP POST (with identities)
+                                                               │
+┌──────────────────────────────────────────────────────────────▼──────────────┐
+│                              Backend                                         │
+│  ┌─────────────────┐     ┌─────────────────┐                               │
+│  │ vercel_ai.py    │────▶│ Identity Context│──┬─────────────────┐          │
+│  │ (extract ids)   │     │ (contextvars)   │  │                 │          │
+│  └─────────────────┘     └─────────────────┘  │                 │          │
+│                                               ▼                 ▼          │
+│                               ┌─────────────────────┐ ┌─────────────────┐  │
+│                               │ Skill Executors     │ │ CodeModeExecutor│  │
+│                               │ (LocalPython/       │ │ (execute_code)  │  │
+│                               │  Sandbox)           │ │                 │  │
+│                               └──────────┬──────────┘ └────────┬────────┘  │
+└──────────────────────────────────────────┼─────────────────────┼───────────┘
+                                           │                     │
+                              subprocess with env    sandbox with env
+                                           │                     │
+                              ┌────────────▼────────┐ ┌──────────▼──────────┐
+                              │ Skill Script        │ │ Code Mode Script    │
+                              │ (GITHUB_TOKEN env)  │ │ (GITHUB_TOKEN env)  │
+                              └─────────────────────┘ └─────────────────────┘
+```
+
+### Identity Context Module
+
+The backend uses Python's `contextvars` to store identities in a request-scoped context, allowing any code in the request chain to access the tokens without explicit parameter passing:
+
+```python
+# agent_runtimes/context/identities.py
+
+from contextvars import ContextVar
+
+# Set identities at the start of request handling
+set_request_identities(identities_from_request)
+
+# Later, in skill executor, retrieve them
+identity_env = get_identity_env()
+# Returns: {"GITHUB_TOKEN": "gho_...", "GITLAB_TOKEN": "glpat-..."}
+```
+
+### Provider-to-Environment Variable Mapping
+
+| Provider | Environment Variable |
+|----------|---------------------|
+| `github` | `GITHUB_TOKEN` |
+| `gitlab` | `GITLAB_TOKEN` |
+| `google` | `GOOGLE_ACCESS_TOKEN` |
+| `microsoft` | `AZURE_ACCESS_TOKEN` |
+| `bitbucket` | `BITBUCKET_TOKEN` |
+| `linkedin` | `LINKEDIN_ACCESS_TOKEN` |
+| *other* | `{PROVIDER}_TOKEN` |
+
+### Skill Script Example
+
+A skill script can access the OAuth token from the environment:
+
+```python
+#!/usr/bin/env python3
+"""List user's GitHub repositories."""
+
+import os
+import httpx
+
+def main():
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        print("Error: GITHUB_TOKEN not set. Please connect your GitHub account.")
+        return
+    
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    
+    response = httpx.get("https://api.github.com/user/repos", headers=headers)
+    repos = response.json()
+    
+    for repo in repos[:10]:
+        print(f"- {repo['full_name']}: {repo.get('description', 'No description')}")
+
+if __name__ == "__main__":
+    main()
+```
+
+### Code Mode Example
+
+Code executed via the `execute_code` tool also receives identity tokens:
+
+```python
+# This code runs in CodeModeExecutor's sandbox
+import os
+import httpx
+
+# Identity tokens are automatically injected
+token = os.environ.get("GITHUB_TOKEN")
+if token:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    }
+    
+    # Fetch user info
+    user = httpx.get("https://api.github.com/user", headers=headers).json()
+    print(f"Logged in as: {user['login']}")
+    
+    # Combine with MCP tools
+    from generated.servers.filesystem import read_file
+    readme = await read_file({"path": "./README.md"})
+    print(f"README has {len(readme['content'])} characters")
+else:
+    print("Connect GitHub to access authenticated APIs")
+```
+
+The `CodeModeExecutor` injects identity environment variables at the start of each execution, so they're available alongside the generated MCP tool bindings.
+
+### Frontend Integration
+
+The Chat component automatically passes connected identities to the backend:
+
+```tsx
+import { Chat, useConnectedIdentities } from '@datalayer/agent-runtimes';
+
+function AgentChat() {
+  // Identities are automatically retrieved and passed by the Chat component
+  // No additional code needed!
+  
+  return (
+    <Chat
+      transport="vercel-ai"
+      baseUrl="http://localhost:8765"
+      agentId="my-agent"
+      showSkillsMenu={true}  // Enable skills
+    />
+  );
+}
+```
+
+If you're using `ChatBase` directly, pass the identities explicitly:
+
+```tsx
+import { ChatBase, useConnectedIdentities } from '@datalayer/agent-runtimes';
+
+function CustomChat() {
+  const connectedIdentities = useConnectedIdentities();
+  
+  // Map to the format expected by ChatBase
+  const identitiesForChat = connectedIdentities.map(identity => ({
+    provider: identity.provider,
+    accessToken: identity.accessToken,
+  }));
+  
+  return (
+    <ChatBase
+      protocol={protocolConfig}
+      connectedIdentities={identitiesForChat}
+      // ... other props
+    />
+  );
+}
+```
+
+### Executor Configuration
+
+All executors automatically check the identity context and inject tokens:
+
+#### Skill Executors
+
+```python
+from agent_skills import LocalPythonExecutor, SandboxExecutor
+
+# LocalPythonExecutor - identity context enabled by default
+executor = LocalPythonExecutor()
+
+# To disable identity context (e.g., for untrusted scripts)
+executor = LocalPythonExecutor(use_identity_context=False)
+
+# SandboxExecutor - also supports identity context
+from code_sandboxes import LocalEvalSandbox
+sandbox = LocalEvalSandbox()
+executor = SandboxExecutor(sandbox)  # Uses run_code with envs parameter
+```
+
+#### Code Mode Executor
+
+```python
+from agent_codemode.composition.executor import CodeModeExecutor
+from agent_codemode.discovery.registry import ToolRegistry
+
+registry = ToolRegistry()
+await registry.discover_all()
+
+# CodeModeExecutor automatically injects identity tokens at execution time
+executor = CodeModeExecutor(registry=registry)
+await executor.setup()
+
+# When execute() is called, identity tokens from the request context
+# are injected as environment variables in the sandbox
+result = await executor.execute('''
+import os
+print(f"GitHub token present: {bool(os.environ.get('GITHUB_TOKEN'))}")
+''')
+```
+
+The `CodeModeExecutor` calls `get_identity_env()` at the start of each `execute()` call, injecting tokens via `os.environ.update()` in the sandbox's Python environment.
+
+### Security Considerations
+
+:::warning Token Security
+- **Tokens are passed via environment variables**, not command-line arguments
+- **Context variables are request-scoped** - they're cleared after the request completes
+- **Execution isolation**:
+  - Skills: Each execution gets a fresh subprocess with only the needed tokens
+  - Code Mode: Tokens are injected into the sandbox's environment for each `execute()` call
+- **No persistent storage** - tokens are not written to disk during execution
+:::
+
+:::tip Principle of Least Privilege
+Only tokens for connected providers are passed. If a user hasn't connected GitHub, `GITHUB_TOKEN` won't be set. Code should gracefully handle missing tokens:
+
+```python
+token = os.environ.get("GITHUB_TOKEN")
+if not token:
+    print("Please connect your GitHub account to use this feature.")
+    sys.exit(1)  # For skills
+    # Or for codemode: raise ValueError("GitHub not connected")
+```
+:::
+
+### Debugging
+
+Enable debug logging to see identity flow:
+
+```python
+import logging
+
+# For skills
+logging.getLogger("agent_runtimes.context.identities").setLevel(logging.DEBUG)
+logging.getLogger("agent_skills.toolset").setLevel(logging.DEBUG)
+
+# For codemode
+logging.getLogger("agent_codemode.composition.executor").setLevel(logging.DEBUG)
+```
+
+Example log output (skills):
+```
+DEBUG:agent_runtimes.context.identities:Set request identities for providers: ['github']
+DEBUG:agent_skills.toolset:Added identity env vars: ['GITHUB_TOKEN']
+DEBUG:agent_skills.toolset:Executing: python /skills/github/scripts/list_repos.py
+```
+
+Example log output (codemode):
+```
+DEBUG:agent_runtimes.context.identities:Set request identities for providers: ['github', 'google']
+DEBUG:agent_codemode.composition.executor:Injecting identity env vars: ['GITHUB_TOKEN', 'GOOGLE_ACCESS_TOKEN']
+DEBUG:agent_codemode.composition.executor:execute() called with code length=256
+```
+
+## Emerging Standards
+
+### OpenID Connect for Agents (OIDC-A)
+
+[OIDC-A 1.0](https://arxiv.org/abs/2509.25974) is an emerging extension to OpenID Connect specifically designed for LLM-based agents. Key features:
+
+- **Agent identity claims**: Standard claims for agent type, capabilities, and attestation
+- **Delegation chains**: Cryptographic proof of authorization delegation from user to agent
+- **Capability tokens**: Fine-grained authorization based on agent capabilities
+
+While OIDC-A is still emerging, Agent Runtimes will track its development and adopt relevant patterns as the specification matures.
+
+### A2A Identity
+
+The [A2A (Agent-to-Agent) protocol](https://google.github.io/a2a/) includes identity provisions for inter-agent communication, complementing the transports layer documented in [Transports](/transports).
+
+## Configuration Reference
+
+### Environment Variables
+
+```bash
+# OAuth provider credentials (for built-in providers)
+GITHUB_CLIENT_ID=your-github-client-id
+GITHUB_CLIENT_SECRET=your-github-client-secret
+
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+
+# Token encryption key (required for production)
+TOKEN_ENCRYPTION_KEY=your-256-bit-key-base64
+
+# Token storage backend
+TOKEN_STORE_TYPE=database  # or "memory", "redis", "vault"
+TOKEN_STORE_URL=postgresql://user:pass@localhost/tokens
+```
+
+### MCP Server Authentication Config
+
+```json
+{
+  "mcpServers": {
+    "kaggle": {
+      "url": "https://www.kaggle.com/mcp",
+      "auth": {
+        "type": "oauth2",
+        "discoveryUrl": "https://www.kaggle.com/.well-known/oauth-authorization-server",
+        "scopes": ["datasets:read", "notebooks:read"],
+        "clientId": "your-kaggle-client-id"
+      }
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_USER_TOKEN}"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/allowed/path"],
+      "auth": null
+    }
+  }
+}
+```
+
+## Further Reading
+
+- [OAuth 2.1 Draft Specification](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-12)
+- [MCP Authorization Specification](https://modelcontextprotocol.io/specification/2025-03-26/basic/authorization)
+- [SPIFFE Concepts](https://spiffe.io/docs/latest/spiffe-about/spiffe-concepts/)
+- [RFC 7591 - OAuth 2.0 Dynamic Client Registration](https://datatracker.ietf.org/doc/html/rfc7591)
+- [RFC 8414 - OAuth 2.0 Authorization Server Metadata](https://datatracker.ietf.org/doc/html/rfc8414)
+- [PKCE (RFC 7636)](https://oauth.net/2/pkce/)
+- [Secure Token Management for AI Agents](https://www.scalekit.com/blog/secure-token-management-ai-agents)

@@ -44,15 +44,27 @@ module.exports = {
         },
         {
           type: 'doc',
+          docId: 'identity/index',
+          position: 'left',
+          label: 'Identity',
+        },
+        {
+          type: 'doc',
           docId: 'models/index',
           position: 'left',
           label: 'Models',
         },
         {
           type: 'doc',
-          docId: 'mcp/index',
+          docId: 'mcp-servers/index',
           position: 'left',
-          label: 'MCP',
+          label: 'MCP Servers',
+        },
+        {
+          type: 'doc',
+          docId: 'programmatic-tools/index',
+          position: 'left',
+          label: 'Programmatic Tools',
         },
         {
           type: 'doc',
@@ -62,21 +74,21 @@ module.exports = {
         },
         {
           type: 'doc',
-          docId: 'agents/index',
+          docId: 'hooks/index',
           position: 'left',
-          label: 'Agents',
+          label: 'Hooks',
         },
         {
           type: 'doc',
-          docId: 'endpoints/index',
+          docId: 'integrations/index',
           position: 'left',
-          label: 'Endpoints',
+          label: 'Integrations',
         },
         {
           type: 'doc',
-          docId: 'skills-codemode/index',
+          docId: 'api-endpoints/index',
           position: 'left',
-          label: 'Skills & Codemode',
+          label: 'API Endpoints',
         },
         {
           href: 'https://discord.gg/YQFwvmSSuR',

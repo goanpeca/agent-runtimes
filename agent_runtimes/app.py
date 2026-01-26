@@ -19,6 +19,10 @@ import sys
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -44,9 +48,11 @@ from .routes import (
     get_agui_mounts,
     get_example_mounts,
     health_router,
+    identity_router,
     mcp_router,
     mcp_ui_router,
     set_a2a_app,
+    skills_router,
     start_a2a_task_managers,
     stop_a2a_task_managers,
     vercel_ai_router,
@@ -221,10 +227,12 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     
     # Include routers
     app.include_router(health_router)
+    app.include_router(identity_router)  # No prefix - uses /api/v1/identity internally
     app.include_router(agents_router, prefix=config.api_prefix)
     app.include_router(acp_router, prefix=config.api_prefix)
     app.include_router(configure_router, prefix=config.api_prefix)
     app.include_router(mcp_router, prefix=config.api_prefix)
+    app.include_router(skills_router, prefix=config.api_prefix)
     app.include_router(vercel_ai_router, prefix=config.api_prefix)
     app.include_router(agui_router, prefix=config.api_prefix)
     app.include_router(mcp_ui_router, prefix=config.api_prefix)

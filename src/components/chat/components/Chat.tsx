@@ -26,6 +26,12 @@ import { Box } from '@datalayer/primer-addons';
 import { ChatBase, type Suggestion } from './base/ChatBase';
 import { AgentDetails } from './AgentDetails';
 import type { ProtocolConfig } from './base/ChatBase';
+import { useConnectedIdentities } from '../../../identity';
+import type {
+  OAuthProvider,
+  OAuthProviderConfig,
+  Identity,
+} from '../../../identity';
 
 // Try to get Jupyter settings if available
 let getJupyterSettings: (() => { baseUrl: string; token: string }) | undefined;
@@ -170,6 +176,9 @@ export interface ChatProps {
   /** Show tools menu (fetched from /configure endpoint) */
   showToolsMenu?: boolean;
 
+  /** Show skills menu (fetched from /skills endpoint) */
+  showSkillsMenu?: boolean;
+
   /** Indicate tools are accessed via Codemode meta-tools */
   codemodeEnabled?: boolean;
 
@@ -178,6 +187,9 @@ export interface ChatProps {
 
   /** Initial MCP server IDs to enable (others will be disabled) */
   initialMcpServers?: string[];
+
+  /** Initial skill IDs to enable */
+  initialSkills?: string[];
 
   /** Clear messages when component mounts or agentId changes */
   clearOnMount?: boolean;
@@ -193,6 +205,21 @@ export interface ChatProps {
 
   /** Auto-focus the input on mount */
   autoFocus?: boolean;
+
+  /** Identity providers configuration for OAuth */
+  identityProviders?: {
+    [K in OAuthProvider]?: {
+      clientId: string;
+      scopes?: string[];
+      config?: Partial<OAuthProviderConfig>;
+    };
+  };
+
+  /** Callback when identity connects */
+  onIdentityConnect?: (identity: Identity) => void;
+
+  /** Callback when identity disconnects */
+  onIdentityDisconnect?: (provider: OAuthProvider) => void;
 }
 
 /**
@@ -256,20 +283,39 @@ export function Chat({
   showHeader = true,
   showModelSelector = true,
   showToolsMenu = true,
+  showSkillsMenu = false,
   codemodeEnabled = false,
   initialModel,
   initialMcpServers,
+  initialSkills,
   clearOnMount: _clearOnMount = true,
   suggestions,
   submitOnSuggestionClick = true,
   description,
   autoFocus = false,
+  identityProviders,
+  onIdentityConnect,
+  onIdentityDisconnect,
 }: ChatProps) {
   const [error, setError] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
   const [showDetails, setShowDetails] = useState(false);
   const [messageCount, setMessageCount] = useState(0);
   const [focusTrigger, setFocusTrigger] = useState(0);
+
+  // Get connected identities to pass to backend for skill execution
+  const connectedIdentities = useConnectedIdentities();
+
+  // Map identities to the format expected by ChatBase
+  // Filter out identities without tokens (not fully connected)
+  const identitiesForChat = useMemo(() => {
+    return connectedIdentities
+      .filter(identity => identity.token?.accessToken)
+      .map(identity => ({
+        provider: identity.provider,
+        accessToken: identity.token!.accessToken,
+      }));
+  }, [connectedIdentities]);
 
   // Focus the input when returning from details view
   useEffect(() => {
@@ -462,6 +508,9 @@ export function Chat({
           url={protocolConfig?.endpoint || baseUrl}
           messageCount={messageCount}
           agentId={agentId}
+          identityProviders={identityProviders}
+          onIdentityConnect={onIdentityConnect}
+          onIdentityDisconnect={onIdentityDisconnect}
           onBack={() => setShowDetails(false)}
         />
       </Box>
@@ -493,9 +542,12 @@ export function Chat({
           }
           showModelSelector={showModelSelector}
           showToolsMenu={showToolsMenu}
+          showSkillsMenu={showSkillsMenu}
           codemodeEnabled={codemodeEnabled}
           initialModel={initialModel}
           initialMcpServers={initialMcpServers}
+          initialSkills={initialSkills}
+          connectedIdentities={identitiesForChat}
           onNewChat={handleNewChat}
           onMessagesChange={messages => setMessageCount(messages.length)}
           headerButtons={{

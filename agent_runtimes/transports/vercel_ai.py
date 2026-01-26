@@ -25,6 +25,7 @@ from starlette.responses import Response
 
 from ..adapters.base import BaseAgent
 from ..context.usage import get_usage_tracker
+from ..context.identities import IdentityContextManager
 from .base import BaseTransport
 
 if TYPE_CHECKING:
@@ -151,28 +152,50 @@ class VercelAITransport(BaseTransport):
         logger = logging.getLogger(__name__)
         pydantic_agent = self._get_pydantic_agent()
 
-        # Extract model from request body if not provided
-        if model is None:
-            try:
-                # Read the body once and cache it
-                body_bytes = await request.body()
-                body = json.loads(body_bytes)
+        # Extract model, builtinTools, and identities from request body if not provided
+        builtin_tools_from_request: list[str] | None = None
+        identities_from_request: list[dict[str, Any]] | None = None
+        body: dict | None = None
+        
+        try:
+            # Read the body once and cache it
+            body_bytes = await request.body()
+            body = json.loads(body_bytes)
+            
+            # Extract model
+            if model is None:
                 model = body.get("model")
                 if model:
                     logger.info(f"Vercel AI: Using model from request body: {model}")
                 else:
                     logger.debug(f"Vercel AI: No model in request body, keys: {list(body.keys())}")
+            
+            # Extract builtinTools from request
+            builtin_tools_from_request = body.get("builtinTools")
+            if builtin_tools_from_request:
+                logger.info(f"Vercel AI: Using builtinTools from request: {builtin_tools_from_request}")
 
-                # Create a new request with the cached body for pydantic-ai to consume
-                # We need to wrap the request with cached body
-                from starlette.requests import Request as StarletteRequest
+            # Extract identities from request (OAuth tokens from frontend)
+            identities_from_request = body.get("identities")
+            if identities_from_request:
+                providers = [i.get("provider") for i in identities_from_request]
+                logger.info(f"Vercel AI: Received identities from request for providers: {providers}")
 
-                async def receive():
-                    return {"type": "http.request", "body": body_bytes}
+            # Create a new request with the cached body for pydantic-ai to consume
+            # We need to wrap the request with cached body
+            from starlette.requests import Request as StarletteRequest
 
-                request = StarletteRequest(request.scope, receive)
-            except (json.JSONDecodeError, Exception) as e:
-                logger.debug(f"Could not extract model from request body: {e}")
+            async def receive():
+                return {"type": "http.request", "body": body_bytes}
+
+            request = StarletteRequest(request.scope, receive)
+        except (json.JSONDecodeError, Exception) as e:
+            logger.debug(f"Could not extract model/builtinTools from request body: {e}")
+
+        # Determine which builtin_tools to use:
+        # 1. If request specifies builtinTools, use those (allows per-request tool selection)
+        # 2. Otherwise fall back to self._builtin_tools (initialized at adapter creation)
+        effective_builtin_tools = builtin_tools_from_request if builtin_tools_from_request is not None else self._builtin_tools
 
         # Create on_complete callback to track usage
         agent_id = self._agent_id
@@ -207,16 +230,19 @@ class VercelAITransport(BaseTransport):
             return
             yield  # type: ignore[misc]
 
-        # Use Pydantic AI's built-in Vercel AI adapter with on_complete callback
-        response = await VercelAIAdapter.dispatch_request(
-            request,
-            agent=pydantic_agent,
-            model=model,
-            usage_limits=self._usage_limits,
-            toolsets=self._toolsets,
-            builtin_tools=self._builtin_tools,
-            on_complete=on_complete,
-        )
+        # Set the identity context for this request so that skill executors
+        # can access OAuth tokens during tool execution
+        async with IdentityContextManager(identities_from_request):
+            # Use Pydantic AI's built-in Vercel AI adapter with on_complete callback
+            response = await VercelAIAdapter.dispatch_request(
+                request,
+                agent=pydantic_agent,
+                model=model,
+                usage_limits=self._usage_limits,
+                toolsets=self._toolsets,
+                builtin_tools=effective_builtin_tools,
+                on_complete=on_complete,
+            )
 
         return response
 

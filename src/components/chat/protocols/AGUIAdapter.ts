@@ -131,6 +131,15 @@ export class AGUIAdapter extends BaseProtocolAdapter {
       messages?: ChatMessage[];
       /** Model to use for this request (overrides agent default) */
       model?: string;
+      /** Built-in MCP tool names to enable */
+      builtinTools?: string[];
+      /** Skill IDs to enable */
+      skills?: string[];
+      /** Connected identity tokens to pass to backend for tool execution */
+      identities?: Array<{
+        provider: string;
+        accessToken: string;
+      }>;
     },
   ): Promise<void> {
     this.abortController = new AbortController();
@@ -211,10 +220,19 @@ export class AGUIAdapter extends BaseProtocolAdapter {
       forwardedProps: null,
       // Include model for per-request model override
       ...(options?.model && { model: options.model }),
+      // Include identities for tool execution with OAuth tokens
+      ...(options?.identities &&
+        options.identities.length > 0 && { identities: options.identities }),
     };
 
     if (options?.model) {
       console.log('[AGUIAdapter] Sending with model:', options.model);
+    }
+    if (options?.identities && options.identities.length > 0) {
+      console.log(
+        '[AGUIAdapter] Sending with identities:',
+        options.identities.map(i => i.provider),
+      );
     }
 
     try {
@@ -586,13 +604,28 @@ export class AGUIAdapter extends BaseProtocolAdapter {
         }
 
         if (toolCallId) {
+          // Check for execution errors in the result
+          // ExecutionResult format: { execution_ok, execution_error, code_error, ... }
+          const contentObj = content as Record<string, unknown> | undefined;
+          const isError =
+            contentObj?.execution_ok === false ||
+            contentObj?.code_error != null ||
+            (contentObj?.error != null && !contentObj?.success);
+          const errorMessage =
+            (contentObj?.execution_error as string) ||
+            (contentObj?.error as string) ||
+            (contentObj?.code_error
+              ? `${(contentObj.code_error as { name?: string })?.name || 'Error'}: ${(contentObj.code_error as { value?: string })?.value || ''}`
+              : undefined);
+
           // Emit tool result event with the actual content
           this.emit({
             type: 'tool-result',
             toolResult: {
               toolCallId,
-              success: true,
+              success: !isError,
               result: content,
+              error: isError ? errorMessage : undefined,
             },
             timestamp: new Date(),
           });

@@ -129,6 +129,13 @@ export class VercelAIAdapter extends BaseProtocolAdapter {
       messages?: ChatMessage[];
       /** Builtin tools / MCP tools to enable for this request */
       builtinTools?: string[];
+      /** Skills to enable for this request */
+      skills?: string[];
+      /** Connected identities with access tokens for skill execution */
+      identities?: Array<{
+        provider: string;
+        accessToken?: string;
+      }>;
     },
   ): Promise<void> {
     if (this.abortController) {
@@ -174,10 +181,38 @@ export class VercelAIAdapter extends BaseProtocolAdapter {
           options.builtinTools.length > 0 && {
             builtinTools: options.builtinTools,
           }),
+        // Skills to enable
+        ...(options?.skills &&
+          options.skills.length > 0 && {
+            skills: options.skills,
+          }),
+        // Connected identities with access tokens
+        ...(options?.identities &&
+          options.identities.length > 0 && {
+            identities: options.identities,
+          }),
       };
 
       if (options?.model) {
         console.log('[VercelAIAdapter] Sending with model:', options.model);
+      }
+
+      if (options?.builtinTools && options.builtinTools.length > 0) {
+        console.log(
+          '[VercelAIAdapter] Sending with builtinTools:',
+          options.builtinTools,
+        );
+      }
+
+      if (options?.skills && options.skills.length > 0) {
+        console.log('[VercelAIAdapter] Sending with skills:', options.skills);
+      }
+
+      if (options?.identities && options.identities.length > 0) {
+        console.log(
+          '[VercelAIAdapter] Sending with identities:',
+          options.identities.map(i => i.provider),
+        );
       }
 
       // Merge custom headers with defaults

@@ -5,17 +5,19 @@
 
 /// <reference types="vite/client" />
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { PageLayout, IconButton } from '@primer/react';
 import { SidebarCollapseIcon, SidebarExpandIcon } from '@primer/octicons-react';
 import { AiAgentIcon } from '@datalayer/icons-react';
 import { Blankslate } from '@primer/react/experimental';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Box } from '@datalayer/primer-addons';
-import { datalayerTheme, DatalayerThemeProvider } from '@datalayer/core';
+import { DatalayerThemeProvider } from '@datalayer/core';
 import { Chat } from '../components/chat';
 import type { Transport, Extension } from '../components/chat';
 import { useAgentsStore } from './stores/examplesStore';
+import { useIdentity } from '../identity';
+import type { OAuthProvider, Identity } from '../identity';
 import {
   MockFileBrowser,
   MainContent,
@@ -45,6 +47,17 @@ const DEFAULT_BASE_URL =
   import.meta.env.VITE_BASE_URL || 'http://localhost:8765';
 const DEFAULT_AGENT_ID = 'demo-agent';
 
+// GitHub OAuth client ID - set via environment variable for security
+// For development, you can create a GitHub OAuth App at:
+// https://github.com/settings/developers
+const GITHUB_CLIENT_ID =
+  import.meta.env.VITE_GITHUB_CLIENT_ID || 'demo-client-id';
+
+// Kaggle API token - set via environment variable
+// Get your token at: https://www.kaggle.com/settings/account (API section)
+// Download kaggle.json and use the "key" value
+const KAGGLE_TOKEN = import.meta.env.VITE_KAGGLE_TOKEN || '';
+
 /**
  * Agent Runtime Example Component
  *
@@ -57,14 +70,51 @@ const DEFAULT_AGENT_ID = 'demo-agent';
  * - Real-time streaming responses
  * - Permission request handling
  * - Connection state management
+ * - **OAuth Identity** - Connect GitHub accounts to give agents access to repositories
+ * - **Token Identity** - Connect Kaggle accounts for dataset and notebook access
  *
  * Usage:
  * 1. Start the agent-runtimes server: `npm run start:acp`
  * 2. The UI will automatically connect to the ACP server
  * 3. Select your agent library and transport
  * 4. Enter the WebSocket URL and Agent ID (or use defaults)
- * 5. Click Connect and start chatting!
+ * 5. Connect your GitHub account for repository access
+ * 6. Connect your Kaggle account for dataset access
+ * 7. Click Connect and start chatting!
  */
+/**
+ * OAuth provider configuration
+ */
+interface OAuthProviderInput {
+  type: 'oauth';
+  clientId: string;
+  scopes?: string[];
+}
+
+/**
+ * Token-based provider configuration
+ */
+interface TokenProviderInput {
+  type: 'token';
+  token: string;
+  displayName?: string;
+  iconUrl?: string;
+}
+
+/**
+ * Unified identity provider input (OAuth or token-based)
+ */
+type IdentityProviderInput = OAuthProviderInput | TokenProviderInput;
+
+/**
+ * Identity providers configuration map.
+ * Supports multiple OAuth providers (github, google, etc.) and
+ * multiple token-based providers (kaggle, huggingface, etc.)
+ */
+type IdentityProvidersInput = {
+  [provider: string]: IdentityProviderInput;
+};
+
 type AgentSpaceFormExampleProps = {
   initialWsUrl?: string;
   initialBaseUrl?: string;
@@ -77,25 +127,53 @@ type AgentSpaceFormExampleProps = {
   initialEnableToolReranker?: boolean;
   initialSelectedMcpServers?: string[];
   autoSelectMcpServers?: boolean;
+  /**
+   * Identity providers configuration.
+   * Supports both OAuth and token-based providers.
+   *
+   * @example
+   * ```tsx
+   * identityProviders={{
+   *   github: { type: 'oauth', clientId: 'xxx', scopes: ['repo'] },
+   *   google: { type: 'oauth', clientId: 'yyy' },
+   *   kaggle: { type: 'token', token: 'zzz' },
+   *   huggingface: { type: 'token', token: 'aaa', displayName: 'HuggingFace' },
+   * }}
+   * ```
+   */
+  identityProviders?: IdentityProvidersInput;
+  /** @deprecated Use identityProviders instead */
+  githubClientId?: string;
+  /** @deprecated Use identityProviders instead */
+  kaggleToken?: string;
 };
 
-const MOCK_SKILLS = [
-  {
-    id: 'batch-process',
-    name: 'Batch Process Files',
-    description: 'Process files in a directory with a reusable workflow.',
-  },
-  {
-    id: 'analyze-csv',
-    name: 'Analyze CSV',
-    description: 'Summarize rows, columns, and headers from a CSV file.',
-  },
-  {
-    id: 'pdf-extract',
-    name: 'PDF Extract',
-    description: 'Extract text and tables from PDF documents.',
-  },
-];
+const MOCK_SKILLS: { id: string; name: string; description: string }[] = [];
+// Skills are now fetched dynamically from the backend API (/api/v1/skills)
+// when Codemode is enabled. The AgentConfiguration component handles this.
+
+// Build default identity providers from env vars (backward compatibility)
+const DEFAULT_IDENTITY_PROVIDERS: IdentityProvidersInput = {
+  ...(GITHUB_CLIENT_ID
+    ? {
+        github: {
+          type: 'oauth' as const,
+          clientId: GITHUB_CLIENT_ID,
+          scopes: ['read:user', 'user:email', 'repo'],
+        },
+      }
+    : {}),
+  ...(KAGGLE_TOKEN
+    ? {
+        kaggle: {
+          type: 'token' as const,
+          token: KAGGLE_TOKEN,
+          displayName: 'Kaggle',
+          iconUrl: 'https://www.kaggle.com/static/images/favicon.ico',
+        },
+      }
+    : {}),
+};
 
 const AgentSpaceFormExample: React.FC<AgentSpaceFormExampleProps> = ({
   initialWsUrl = DEFAULT_WS_URL,
@@ -109,6 +187,10 @@ const AgentSpaceFormExample: React.FC<AgentSpaceFormExampleProps> = ({
   initialEnableToolReranker = false,
   initialSelectedMcpServers = [],
   autoSelectMcpServers = false,
+  identityProviders = DEFAULT_IDENTITY_PROVIDERS,
+  // Deprecated props - merged into identityProviders for backward compat
+  githubClientId,
+  kaggleToken,
 }) => {
   const [wsUrl, setWsUrl] = useState(initialWsUrl);
   const [baseUrl, setBaseUrl] = useState(initialBaseUrl);
@@ -135,6 +217,129 @@ const AgentSpaceFormExample: React.FC<AgentSpaceFormExampleProps> = ({
   );
   const autoSelectRef = useRef(false);
   const enableSkills = selectedSkills.length > 0;
+
+  // Merge deprecated props into identityProviders for backward compatibility
+  const mergedIdentityProviders = React.useMemo((): IdentityProvidersInput => {
+    const merged = { ...identityProviders };
+
+    // Add deprecated githubClientId if provided and not already in config
+    if (githubClientId && !merged.github) {
+      merged.github = {
+        type: 'oauth',
+        clientId: githubClientId,
+        scopes: ['read:user', 'user:email', 'repo'],
+      };
+    }
+
+    // Add deprecated kaggleToken if provided and not already in config
+    if (kaggleToken && !merged.kaggle) {
+      merged.kaggle = {
+        type: 'token',
+        token: kaggleToken,
+        displayName: 'Kaggle',
+        iconUrl: 'https://www.kaggle.com/static/images/favicon.ico',
+      };
+    }
+
+    return merged;
+  }, [identityProviders, githubClientId, kaggleToken]);
+
+  // Extract OAuth providers for useIdentity hook (token providers are handled separately)
+  const oauthProvidersConfig = React.useMemo(() => {
+    const providers: {
+      [key: string]: { clientId: string; scopes?: string[] };
+    } = {};
+
+    for (const [provider, config] of Object.entries(mergedIdentityProviders)) {
+      if (config.type === 'oauth') {
+        providers[provider] = {
+          clientId: config.clientId,
+          scopes: config.scopes,
+        };
+      }
+    }
+
+    return Object.keys(providers).length > 0 ? providers : undefined;
+  }, [mergedIdentityProviders]);
+
+  // Extract token-based providers for auto-connection
+  const tokenProviders = React.useMemo(() => {
+    const providers: Array<{
+      provider: string;
+      token: string;
+      displayName?: string;
+      iconUrl?: string;
+    }> = [];
+
+    for (const [provider, config] of Object.entries(mergedIdentityProviders)) {
+      if (config.type === 'token') {
+        providers.push({
+          provider,
+          token: config.token,
+          displayName: config.displayName,
+          iconUrl: config.iconUrl,
+        });
+      }
+    }
+
+    return providers;
+  }, [mergedIdentityProviders]);
+
+  // Identity state - pass OAuth providers to configure them before callback is processed
+  const { connectWithToken, isConnected: isIdentityConnected } = useIdentity({
+    providers: oauthProvidersConfig,
+    autoHandleCallback: true,
+  });
+
+  // Track which token providers we've attempted to connect
+  const connectedTokenProvidersRef = useRef<Set<string>>(new Set());
+
+  // Auto-connect all token-based providers if available and not already connected
+  useEffect(() => {
+    for (const { provider, token, displayName, iconUrl } of tokenProviders) {
+      // Skip if we've already attempted to connect this provider
+      if (connectedTokenProvidersRef.current.has(provider)) {
+        continue;
+      }
+
+      // Skip if already connected
+      if (isIdentityConnected(provider)) {
+        connectedTokenProvidersRef.current.add(provider);
+        continue;
+      }
+
+      // Mark as attempted
+      connectedTokenProvidersRef.current.add(provider);
+
+      connectWithToken(provider, token, { displayName, iconUrl })
+        .then(() => {
+          console.log(
+            `[AgentSpaceFormExample] ${provider} connected with token`,
+          );
+        })
+        .catch(err => {
+          console.error(
+            `[AgentSpaceFormExample] Failed to connect ${provider}:`,
+            err,
+          );
+          // Remove from attempted set so we can retry
+          connectedTokenProvidersRef.current.delete(provider);
+        });
+    }
+  }, [tokenProviders, connectWithToken, isIdentityConnected]);
+
+  // Handle identity connect/disconnect
+  const handleIdentityConnect = useCallback((identity: Identity) => {
+    console.log(
+      '[AgentSpaceFormExample] Identity connected:',
+      identity.provider,
+      identity.userInfo?.name || identity.userInfo?.email,
+    );
+  }, []);
+
+  const handleIdentityDisconnect = useCallback((provider: OAuthProvider) => {
+    console.log('[AgentSpaceFormExample] Identity disconnected:', provider);
+  }, []);
 
   // Handle codemode change - keep MCP server selections to scope codemode tools
   const handleEnableCodemodeChange = (enabled: boolean) => {
@@ -360,7 +565,7 @@ const AgentSpaceFormExample: React.FC<AgentSpaceFormExampleProps> = ({
 
   return (
     <QueryClientProvider client={queryClient}>
-      <DatalayerThemeProvider theme={datalayerTheme}>
+      <DatalayerThemeProvider>
         <PageLayout containerWidth="full">
           {/* Header - empty content for new agent */}
           <Header
@@ -532,6 +737,9 @@ const AgentSpaceFormExample: React.FC<AgentSpaceFormExampleProps> = ({
                       availableSkills={MOCK_SKILLS}
                       selectedSkills={selectedSkills}
                       selectedMcpServers={selectedMcpServers}
+                      identityProviders={oauthProvidersConfig}
+                      onIdentityConnect={handleIdentityConnect}
+                      onIdentityDisconnect={handleIdentityDisconnect}
                       onAgentLibraryChange={setAgentLibrary}
                       onTransportChange={setTransport}
                       onExtensionsChange={setExtensions}
@@ -565,9 +773,14 @@ const AgentSpaceFormExample: React.FC<AgentSpaceFormExampleProps> = ({
                         height="calc(100vh - 250px)"
                         showModelSelector={true}
                         showToolsMenu={true}
+                        showSkillsMenu={true}
                         codemodeEnabled={enableCodemode}
                         initialModel={model}
                         initialMcpServers={selectedMcpServers}
+                        initialSkills={selectedSkills}
+                        identityProviders={oauthProvidersConfig}
+                        onIdentityConnect={handleIdentityConnect}
+                        onIdentityDisconnect={handleIdentityDisconnect}
                         suggestions={[
                           {
                             title: '👋 Say hello',
