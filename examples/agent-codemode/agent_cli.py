@@ -17,7 +17,7 @@ import io
 import sys
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 import inspect
 
 try:
@@ -34,7 +34,12 @@ try:
 except ImportError:
     HAS_RICH = False
 
-from agent_runtimes.context.snapshot import extract_context_snapshot, get_model_context_window
+from agent_runtimes.context import (
+    extract_context_snapshot,
+    get_model_context_window,
+    UsageTracker,
+    format_usage,
+)
 HAS_CONTEXT_SNAPSHOT = True
 
 logger = logging.getLogger(__name__)
@@ -42,6 +47,37 @@ logger = logging.getLogger(__name__)
 
 def _resolve_mcp_server_path() -> str:
     return str(Path(__file__).with_name("example_mcp_server.py").resolve())
+
+
+def _resolve_config_path() -> str:
+    return str(Path(__file__).with_name("agent_cli_config.json").resolve())
+
+
+def _load_mcp_config() -> list[dict[str, Any]]:
+    """Load MCP server configuration from JSON config file.
+    
+    Returns:
+        List of MCP server configurations, or empty list if config not found.
+    """
+    config_path = _resolve_config_path()
+    
+    if not Path(config_path).exists():
+        logger.debug("Config file not found at %s, using default", config_path)
+        return []
+    
+    try:
+        import json
+        with open(config_path, "r") as f:
+            config = json.load(f)
+        
+        if config and "mcp_servers" in config:
+            servers = config["mcp_servers"]
+            logger.debug("Loaded %d MCP server(s) from config", len(servers))
+            return servers
+        return []
+    except Exception as e:
+        logger.warning("Failed to load config file: %s", e)
+        return []
 
 
 def _build_prompt_examples(codemode: bool) -> str:
@@ -118,86 +154,14 @@ def _build_system_prompt(
     return "\n".join(lines)
 
 
-def _usage_to_dict(usage: object) -> dict[str, object]:
-    if usage is None:
-        return {}
-
-    if isinstance(usage, dict):
-        return usage
-
-    data = None
-    if hasattr(usage, "model_dump"):
-        try:
-            data = usage.model_dump()
-        except Exception:
-            data = None
-    if data is None and hasattr(usage, "dict"):
-        try:
-            data = usage.dict()
-        except Exception:
-            data = None
-    if data is None and hasattr(usage, "__dict__"):
-        data = usage.__dict__
-
-    if isinstance(data, dict):
-        return data
-
-    extracted: dict[str, object] = {}
-    for key in (
-        "input_tokens",
-        "output_tokens",
-        "total_tokens",
-        "requests",
-        "cached_tokens",
-        "billable_tokens",
-    ):
-        if hasattr(usage, key):
-            try:
-                extracted[key] = getattr(usage, key)
-            except Exception:
-                pass
-
-    return extracted
-
-
-def _format_usage(usage: object, keys: Optional[list[str]] = None) -> str:
-    data = _usage_to_dict(usage)
-    if not data:
-        return "N/A"
-
-    parts = []
-    preferred = [k for k in (keys or [
-        "input_tokens",
-        "output_tokens",
-        "total_tokens",
-        "requests",
-        "cached_tokens",
-        "billable_tokens",
-        "cache_write_tokens",
-        "cache_read_tokens",
-        "input_audio_tokens",
-        "cache_audio_read_tokens",
-        "output_audio_tokens",
-        "tool_calls",
-        "details",
-    ]) if k != "details"]
-    for key in preferred:
-        if key in data:
-            parts.append(f"{key}={data[key]}")
-    if parts:
-        return ", ".join(parts)
-    return str(data)
-
-    return str(usage)
-
-
 def _usage_to_table(
     prompt_usage: object,
     session_usage: object,
     keys: Optional[list[str]] = None,
 ) -> "Table":
-    prompt_data = _usage_to_dict(prompt_usage)
-    session_data = _usage_to_dict(session_usage)
+    from agent_runtimes.context import usage_to_dict
+    prompt_data = usage_to_dict(prompt_usage)
+    session_data = usage_to_dict(session_usage)
     table = Table(title="Token usage")
     table.add_column("Metric", style="cyan", no_wrap=True)
     table.add_column("Prompt", style="cyan")
@@ -506,15 +470,39 @@ def create_agent(model: str, codemode: bool) -> tuple[Agent, object | None]:
         from agent_codemode import CodemodeToolset, ToolRegistry, MCPServerConfig, CodeModeConfig
 
         registry = ToolRegistry()
-        # Server name becomes the tool prefix (e.g., example_mcp__read_text_file)
-        # and matches the generated bindings path: generated.servers.example_mcp
-        registry.add_server(
-            MCPServerConfig(
-                name="example_mcp",
-                command=sys.executable,
-                args=[mcp_server_path],
+        
+        # Load MCP servers from config file
+        mcp_configs = _load_mcp_config()
+        if mcp_configs:
+            for server_config in mcp_configs:
+                name = server_config.get("name", "mcp_server")
+                command = server_config.get("command", sys.executable)
+                args = server_config.get("args", [])
+                # Resolve relative paths
+                resolved_args = []
+                config_dir = Path(_resolve_config_path()).parent
+                for arg in args:
+                    if arg.startswith("./") or arg.startswith("../"):
+                        resolved_args.append(str((config_dir / arg).resolve()))
+                    else:
+                        resolved_args.append(arg)
+                registry.add_server(
+                    MCPServerConfig(
+                        name=name,
+                        command=command,
+                        args=resolved_args,
+                    )
+                )
+                logger.debug("Added MCP server from config: %s", name)
+        else:
+            # Fallback to default example_mcp server
+            registry.add_server(
+                MCPServerConfig(
+                    name="example_mcp",
+                    command=sys.executable,
+                    args=[mcp_server_path],
+                )
             )
-        )
 
         repo_root = Path(__file__).resolve().parents[2]
         config = CodeModeConfig(
@@ -531,12 +519,39 @@ def create_agent(model: str, codemode: bool) -> tuple[Agent, object | None]:
         )
         toolsets = [toolset]
     else:
-        mcp_server = MCPServerStdio(
-            sys.executable,
-            args=[mcp_server_path],
-            timeout=300.0,
-        )
-        toolsets = [mcp_server]
+        # Load MCP servers from config file
+        mcp_configs = _load_mcp_config()
+        if mcp_configs:
+            toolsets = []
+            config_dir = Path(_resolve_config_path()).parent
+            for server_config in mcp_configs:
+                command = server_config.get("command", sys.executable)
+                args = server_config.get("args", [])
+                timeout = server_config.get("timeout", 300.0)
+                env = server_config.get("env")
+                # Resolve relative paths
+                resolved_args = []
+                for arg in args:
+                    if arg.startswith("./") or arg.startswith("../"):
+                        resolved_args.append(str((config_dir / arg).resolve()))
+                    else:
+                        resolved_args.append(arg)
+                mcp_server = MCPServerStdio(
+                    command,
+                    args=resolved_args,
+                    timeout=float(timeout),
+                    env=env,
+                )
+                toolsets.append(mcp_server)
+                logger.debug("Added MCP server from config: %s", server_config.get("name", "unnamed"))
+        else:
+            # Fallback to default example_mcp server
+            mcp_server = MCPServerStdio(
+                sys.executable,
+                args=[mcp_server_path],
+                timeout=300.0,
+            )
+            toolsets = [mcp_server]
         toolset = None
 
     # Skip upfront tool discovery to avoid anyio cancel-scope issues.
@@ -614,20 +629,7 @@ def main() -> None:
         prompt = "𝄃𝄂𝄂𝄀𝄁𝄃𝄂𝄂𝄃 agent-codemode-agent ➤ " if codemode else "mcp-agent ➤ "
         multiline = False
         message_history = []  # Store conversation history
-        session_usage: dict[str, float] = {
-            "input_tokens": 0.0,
-            "output_tokens": 0.0,
-            "total_tokens": 0.0,
-            "requests": 0.0,
-            "cached_tokens": 0.0,
-            "billable_tokens": 0.0,
-            "codemode_tool_calls": 0.0,
-            "mcp_tool_calls": 0.0,
-        }
-        previous_counts: dict[str, int] = {
-            "codemode_tool_calls": 0,
-            "mcp_tool_calls": 0,
-        }
+        usage_tracker = UsageTracker(codemode=codemode)
 
         if codemode_toolset:
             if codemode:
@@ -766,115 +768,30 @@ def main() -> None:
                 if reply is None:
                     reply = str(run_result)
 
-                usage_data = _usage_to_dict(run_usage)
-                if usage_data:
-                    for key in session_usage:
-                        if key in usage_data and isinstance(usage_data[key], (int, float)):
-                            session_usage[key] += float(usage_data[key])
-                        elif key in usage_data:
-                            try:
-                                session_usage[key] += float(usage_data[key])
-                            except Exception:
-                                pass
-
-                prompt_usage_payload = dict(usage_data)
+                # Record turn usage with the tracker
+                codemode_counts = None
                 if codemode and codemode_toolset is not None:
-                    counts = {}
                     if hasattr(codemode_toolset, "get_call_counts"):
-                        counts = codemode_toolset.get_call_counts()  # type: ignore[assignment]
-                    if counts:
-                        prompt_usage_payload["codemode_tool_calls"] = (
-                            counts.get("codemode_tool_calls", 0) - previous_counts["codemode_tool_calls"]
-                        )
-                        prompt_usage_payload["mcp_tool_calls"] = (
-                            counts.get("mcp_tool_calls", 0) - previous_counts["mcp_tool_calls"]
-                        )
-                        previous_counts["codemode_tool_calls"] = counts.get("codemode_tool_calls", 0)
-                        previous_counts["mcp_tool_calls"] = counts.get("mcp_tool_calls", 0)
-                        session_usage["codemode_tool_calls"] += float(prompt_usage_payload["codemode_tool_calls"])
-                        session_usage["mcp_tool_calls"] += float(prompt_usage_payload["mcp_tool_calls"])
-
-                if not codemode:
-                    if "tool_calls" in prompt_usage_payload and "mcp_tool_calls" not in prompt_usage_payload:
-                        prompt_usage_payload["mcp_tool_calls"] = prompt_usage_payload["tool_calls"]
-                    if "tool_calls" in prompt_usage_payload:
-                        prompt_usage_payload.pop("tool_calls", None)
-                    prompt_usage_payload.setdefault("mcp_tool_calls", 0)
-                    prompt_usage_payload["codemode_tool_calls"] = "N/A"
-                    if "tool_calls" in usage_data and isinstance(usage_data["tool_calls"], (int, float)):
-                        session_usage["mcp_tool_calls"] += float(usage_data["tool_calls"])
-                    elif "tool_calls" in usage_data:
-                        try:
-                            session_usage["mcp_tool_calls"] += float(usage_data["tool_calls"])
-                        except Exception:
-                            pass
-
-                if "tool_calls" in prompt_usage_payload:
-                    prompt_usage_payload.pop("tool_calls", None)
-
-                prompt_usage_keys = [
-                    "input_tokens",
-                    "output_tokens",
-                    "total_tokens",
-                    "requests",
-                    "cached_tokens",
-                    "billable_tokens",
-                    "cache_write_tokens",
-                    "cache_read_tokens",
-                    "input_audio_tokens",
-                    "cache_audio_read_tokens",
-                    "output_audio_tokens",
-                    "mcp_tool_calls",
-                    "codemode_tool_calls",
-                ]
+                        codemode_counts = codemode_toolset.get_call_counts()
+                usage_tracker.record_turn(run_usage, codemode_counts)
 
                 print(reply)
 
                 if HAS_RICH:
                     console = Console()
                     console.print()
-                    session_usage_payload = dict(session_usage)
-                    if not codemode:
-                        session_usage_payload["codemode_tool_calls"] = "N/A"
                     console.print(
-                        _usage_to_table(prompt_usage_payload, session_usage_payload, prompt_usage_keys)
+                        _usage_to_table(
+                            usage_tracker.get_turn_data(),
+                            usage_tracker.get_session_data(),
+                            UsageTracker.DEFAULT_USAGE_KEYS,
+                        )
                     )
                     # Display context snapshot
                     if HAS_CONTEXT_SNAPSHOT:
                         try:
-                            from agent_runtimes.context.snapshot import TurnUsage, SessionUsage
-                            
-                            # Get model's reported tokens from prompt usage (THIS TURN)
-                            turn_input = int(prompt_usage_payload.get("input_tokens", 0) or 0)
-                            turn_output = int(prompt_usage_payload.get("output_tokens", 0) or 0)
-                            turn_requests = int(prompt_usage_payload.get("requests", 1) or 1)
-                            
-                            # Get tool calls - use mcp_tool_calls for non-codemode
-                            if codemode:
-                                turn_tool_calls_val = prompt_usage_payload.get("codemode_tool_calls", 0)
-                                session_tool_calls_val = session_usage.get("codemode_tool_calls", 0)
-                            else:
-                                turn_tool_calls_val = prompt_usage_payload.get("mcp_tool_calls", 0)
-                                session_tool_calls_val = session_usage.get("mcp_tool_calls", 0)
-                            turn_tool_calls = int(turn_tool_calls_val) if isinstance(turn_tool_calls_val, (int, float)) else 0
-                            session_tool_calls = int(session_tool_calls_val) if isinstance(session_tool_calls_val, (int, float)) else 0
-                            
-                            # Build turn usage (will get tool names from snapshot)
-                            turn_usage = TurnUsage(
-                                input_tokens=turn_input,
-                                output_tokens=turn_output,
-                                requests=turn_requests,
-                                tool_calls=turn_tool_calls,
-                                tool_names=[],  # Will be populated from per_request_usage
-                            )
-                            
-                            # Build session usage
-                            session_usage_obj = SessionUsage(
-                                input_tokens=int(session_usage.get("input_tokens", 0)),
-                                output_tokens=int(session_usage.get("output_tokens", 0)),
-                                requests=int(session_usage.get("requests", 0)),
-                                tool_calls=session_tool_calls,
-                            )
+                            turn_usage = usage_tracker.get_turn_usage()
+                            session_usage_obj = usage_tracker.get_session_usage()
                             
                             # Get context window for the model
                             context_window = get_model_context_window(model)
@@ -883,8 +800,8 @@ def main() -> None:
                                 agent, "agent_cli",
                                 context_window=context_window,
                                 message_history=message_history,
-                                model_input_tokens=turn_input,
-                                model_output_tokens=turn_output,
+                                model_input_tokens=turn_usage.input_tokens,
+                                model_output_tokens=turn_usage.output_tokens,
                                 turn_usage=turn_usage,
                                 session_usage=session_usage_obj,
                                 tool_definitions=captured_tool_defs if captured_tool_defs else None,
@@ -894,25 +811,24 @@ def main() -> None:
                             # Each request can have multiple tools, so flatten the lists
                             per_req = snapshot.per_request_usage if hasattr(snapshot, 'per_request_usage') else []
                             tool_names = []
-                            for r in per_req[-turn_requests:]:
+                            for r in per_req[-turn_usage.requests:]:
                                 tool_names.extend(r.tool_names)
                             if tool_names and snapshot.turn_usage:
                                 snapshot.turn_usage.tool_names = tool_names
                             
-                            console.print(snapshot.to_table())
+                            console.print(snapshot.to_table(show_context=False))
                         except Exception as e:
                             logger.debug("Could not display context snapshot: %s", e)
                     console.print()
                 else:
-                    print(f"\nToken usage (prompt): {_format_usage(run_usage)}")
-                    print(
-                        f"Token usage (session): {_format_usage(session_usage, prompt_usage_keys)}\n"
-                    )
+                    print(f"\nToken usage (prompt): {usage_tracker.format_turn_usage()}")
+                    print(f"Token usage (session): {usage_tracker.format_session_usage()}\n")
                     # Display context snapshot (plain text fallback)
                     if HAS_CONTEXT_SNAPSHOT:
                         try:
-                            model_input_tokens = prompt_usage_payload.get("input_tokens")
-                            model_output_tokens = prompt_usage_payload.get("output_tokens")
+                            turn_data = usage_tracker.get_turn_data()
+                            model_input_tokens = turn_data.get("input_tokens")
+                            model_output_tokens = turn_data.get("output_tokens")
                             snapshot = extract_context_snapshot(
                                 agent, "agent_cli", 
                                 message_history=message_history,

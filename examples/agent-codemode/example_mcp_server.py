@@ -14,8 +14,9 @@ from __future__ import annotations
 import os
 import random
 from pathlib import Path
-from typing import Optional, TypedDict
+from typing import Optional
 
+from typing_extensions import TypedDict
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("example-mcp-server")

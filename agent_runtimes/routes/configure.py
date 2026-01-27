@@ -133,7 +133,7 @@ async def get_agent_context_snapshot_endpoint(
     Returns:
         Context snapshot with distribution data.
     """
-    from ..context.snapshot import get_agent_context_snapshot
+    from ..context.session import get_agent_context_snapshot
     
     snapshot = get_agent_context_snapshot(agent_id)
     if snapshot is None:

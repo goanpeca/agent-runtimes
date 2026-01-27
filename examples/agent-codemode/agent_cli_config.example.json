@@ -1,0 +1,10 @@
+{
+  "mcp_servers": [
+    {
+      "name": "example_mcp_server",
+      "command": "python",
+      "args": ["./example_mcp_server.py"],
+      "timeout": 300
+    }
+  ]
+}

@@ -188,6 +188,8 @@ class RequestUsageSnapshot:
     input_tokens: int
     output_tokens: int
     tool_names: list[str] = field(default_factory=list)  # Tools called in this request
+    timestamp: str | None = None  # ISO format timestamp
+    turn_id: int | None = None  # Which turn this step belongs to
 
 
 @dataclass
@@ -207,6 +209,417 @@ class SessionUsage:
     output_tokens: int = 0
     requests: int = 0
     tool_calls: int = 0
+    turns: int = 0
+
+
+@dataclass
+class StepRecord:
+    """Record of a single step for CSV export.
+    
+    Each step represents one model request/response cycle.
+    """
+    session_id: str
+    turn_id: int  # 1-indexed turn number
+    step_number: int  # 1-indexed step number within the turn
+    tool_name: str  # Tool called (or "Response" for final response)
+    input_tokens: int
+    output_tokens: int
+    timestamp: str  # ISO format timestamp
+    
+    def to_csv_row(self) -> str:
+        """Convert to CSV row string."""
+        return f"{self.session_id},{self.turn_id},{self.step_number},{self.tool_name},{self.input_tokens},{self.output_tokens},{self.timestamp}"
+    
+    @staticmethod
+    def csv_header() -> str:
+        """Get CSV header row."""
+        return "Session_ID,Turn_ID,Step_Number,Tool_Name,Input_Tokens,Output_Tokens,Timestamp"
+
+
+# ============================================================================
+# Usage extraction utilities
+# ============================================================================
+
+def usage_to_dict(usage: object) -> dict[str, object]:
+    """Convert a usage object (from pydantic-ai) to a dictionary.
+    
+    Handles various usage object formats: dict, pydantic models, objects with __dict__.
+    
+    Args:
+        usage: Usage object from agent run (e.g., run.usage())
+        
+    Returns:
+        Dictionary with usage metrics (input_tokens, output_tokens, etc.)
+    """
+    if usage is None:
+        return {}
+
+    if isinstance(usage, dict):
+        return usage
+
+    data = None
+    if hasattr(usage, "model_dump"):
+        try:
+            data = usage.model_dump()
+        except Exception:
+            data = None
+    if data is None and hasattr(usage, "dict"):
+        try:
+            data = usage.dict()
+        except Exception:
+            data = None
+    if data is None and hasattr(usage, "__dict__"):
+        data = usage.__dict__
+
+    if isinstance(data, dict):
+        return data
+
+    extracted: dict[str, object] = {}
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "requests",
+        "cached_tokens",
+        "billable_tokens",
+    ):
+        if hasattr(usage, key):
+            try:
+                extracted[key] = getattr(usage, key)
+            except Exception:
+                pass
+
+    return extracted
+
+
+def format_usage(usage: object, keys: list[str] | None = None) -> str:
+    """Format usage data as a human-readable string.
+    
+    Args:
+        usage: Usage object or dictionary
+        keys: Optional list of keys to include (defaults to common metrics)
+        
+    Returns:
+        Formatted string like "input_tokens=100, output_tokens=50"
+    """
+    data = usage_to_dict(usage)
+    if not data:
+        return "N/A"
+
+    parts = []
+    preferred = [k for k in (keys or [
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "requests",
+        "cached_tokens",
+        "billable_tokens",
+        "cache_write_tokens",
+        "cache_read_tokens",
+        "input_audio_tokens",
+        "cache_audio_read_tokens",
+        "output_audio_tokens",
+        "tool_calls",
+        "details",
+    ]) if k != "details"]
+    for key in preferred:
+        if key in data:
+            parts.append(f"{key}={data[key]}")
+    if parts:
+        return ", ".join(parts)
+    return str(data)
+
+
+class UsageTracker:
+    """Tracks usage statistics across a session.
+    
+    This class encapsulates the logic for tracking token usage, tool calls,
+    and other metrics across multiple turns in a conversation.
+    
+    Usage:
+        tracker = UsageTracker()
+        
+        # After each turn:
+        tracker.record_turn(run_usage, codemode_counts)
+        
+        # Get current stats:
+        turn_usage = tracker.get_turn_usage()
+        session_usage = tracker.get_session_usage()
+    """
+    
+    # Default keys for usage display
+    DEFAULT_USAGE_KEYS: list[str] = [
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "requests",
+        "cached_tokens",
+        "billable_tokens",
+        "cache_write_tokens",
+        "cache_read_tokens",
+        "input_audio_tokens",
+        "cache_audio_read_tokens",
+        "output_audio_tokens",
+        "mcp_tool_calls",
+        "codemode_tool_calls",
+    ]
+    
+    def __init__(self, codemode: bool = False, session_id: str | None = None):
+        """Initialize the usage tracker.
+        
+        Args:
+            codemode: Whether this is a codemode session (affects tool call tracking)
+            session_id: Optional session identifier for CSV export
+        """
+        import uuid
+        self.codemode = codemode
+        self.session_id = session_id or f"session_{uuid.uuid4().hex[:8]}"
+        self.turn_count = 0
+        
+        # Step history for CSV export
+        self._step_history: list[StepRecord] = []
+        
+        # Session-level accumulators
+        self._session: dict[str, float] = {
+            "input_tokens": 0.0,
+            "output_tokens": 0.0,
+            "total_tokens": 0.0,
+            "requests": 0.0,
+            "cached_tokens": 0.0,
+            "billable_tokens": 0.0,
+            "codemode_tool_calls": 0.0,
+            "mcp_tool_calls": 0.0,
+        }
+        
+        # Previous counts for computing deltas
+        self._previous_counts: dict[str, int] = {
+            "codemode_tool_calls": 0,
+            "mcp_tool_calls": 0,
+        }
+        
+        # Current turn data (reset each turn)
+        self._turn_data: dict[str, object] = {}
+    
+    def record_turn(
+        self,
+        run_usage: object,
+        codemode_counts: dict[str, int] | None = None,
+    ) -> dict[str, object]:
+        """Record usage from a completed turn.
+        
+        Args:
+            run_usage: Usage object from agent run (run.usage())
+            codemode_counts: Optional dict with codemode/mcp tool call counts
+            
+        Returns:
+            Dictionary with this turn's usage data
+        """
+        self.turn_count += 1
+        
+        usage_data = usage_to_dict(run_usage)
+        
+        # Accumulate session totals
+        for key in self._session:
+            if key in usage_data and isinstance(usage_data[key], (int, float)):
+                self._session[key] += float(usage_data[key])
+            elif key in usage_data:
+                try:
+                    self._session[key] += float(usage_data[key])
+                except Exception:
+                    pass
+        
+        # Build turn data
+        self._turn_data = dict(usage_data)
+        
+        # Handle codemode tool call tracking
+        if self.codemode and codemode_counts:
+            self._turn_data["codemode_tool_calls"] = (
+                codemode_counts.get("codemode_tool_calls", 0) - self._previous_counts["codemode_tool_calls"]
+            )
+            self._turn_data["mcp_tool_calls"] = (
+                codemode_counts.get("mcp_tool_calls", 0) - self._previous_counts["mcp_tool_calls"]
+            )
+            self._previous_counts["codemode_tool_calls"] = codemode_counts.get("codemode_tool_calls", 0)
+            self._previous_counts["mcp_tool_calls"] = codemode_counts.get("mcp_tool_calls", 0)
+            self._session["codemode_tool_calls"] += float(self._turn_data["codemode_tool_calls"])
+            self._session["mcp_tool_calls"] += float(self._turn_data["mcp_tool_calls"])
+        elif not self.codemode:
+            # Non-codemode: track MCP tool calls
+            if "tool_calls" in self._turn_data and "mcp_tool_calls" not in self._turn_data:
+                self._turn_data["mcp_tool_calls"] = self._turn_data["tool_calls"]
+            self._turn_data.pop("tool_calls", None)
+            self._turn_data.setdefault("mcp_tool_calls", 0)
+            self._turn_data["codemode_tool_calls"] = "N/A"
+            if "tool_calls" in usage_data and isinstance(usage_data["tool_calls"], (int, float)):
+                self._session["mcp_tool_calls"] += float(usage_data["tool_calls"])
+        
+        # Clean up tool_calls key
+        self._turn_data.pop("tool_calls", None)
+        
+        return self._turn_data
+    
+    def get_turn_data(self) -> dict[str, object]:
+        """Get the current turn's usage data."""
+        return dict(self._turn_data)
+    
+    def get_session_data(self) -> dict[str, object]:
+        """Get the session's cumulative usage data."""
+        data = dict(self._session)
+        if not self.codemode:
+            data["codemode_tool_calls"] = "N/A"
+        return data
+    
+    def get_turn_usage(self) -> TurnUsage:
+        """Build TurnUsage dataclass from current turn data."""
+        data = self._turn_data
+        
+        input_tokens = int(data.get("input_tokens", 0) or 0)
+        output_tokens = int(data.get("output_tokens", 0) or 0)
+        requests = int(data.get("requests", 1) or 1)
+        
+        # Get tool calls based on mode
+        if self.codemode:
+            tool_calls_val = data.get("codemode_tool_calls", 0)
+        else:
+            tool_calls_val = data.get("mcp_tool_calls", 0)
+        tool_calls = int(tool_calls_val) if isinstance(tool_calls_val, (int, float)) else 0
+        
+        return TurnUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            requests=requests,
+            tool_calls=tool_calls,
+            tool_names=[],  # Populated later from snapshot
+        )
+    
+    def get_session_usage(self) -> SessionUsage:
+        """Build SessionUsage dataclass from session data."""
+        if self.codemode:
+            tool_calls = int(self._session.get("codemode_tool_calls", 0))
+        else:
+            tool_calls = int(self._session.get("mcp_tool_calls", 0))
+        
+        return SessionUsage(
+            input_tokens=int(self._session.get("input_tokens", 0)),
+            output_tokens=int(self._session.get("output_tokens", 0)),
+            requests=int(self._session.get("requests", 0)),
+            tool_calls=tool_calls,
+            turns=self.turn_count,
+        )
+    
+    def format_turn_usage(self) -> str:
+        """Format turn usage as string."""
+        return format_usage(self._turn_data, self.DEFAULT_USAGE_KEYS)
+    
+    def format_session_usage(self) -> str:
+        """Format session usage as string."""
+        return format_usage(self.get_session_data(), self.DEFAULT_USAGE_KEYS)
+    
+    def record_step(
+        self,
+        step_number: int,
+        tool_name: str,
+        input_tokens: int,
+        output_tokens: int,
+        timestamp: str | None = None,
+    ) -> StepRecord:
+        """Record a single step (model request/response) for CSV export.
+        
+        Args:
+            step_number: 1-indexed step number within the current turn
+            tool_name: Name of tool called (or "Response" for final response)
+            input_tokens: Input tokens for this step
+            output_tokens: Output tokens for this step
+            timestamp: Optional ISO timestamp (auto-generated if not provided)
+            
+        Returns:
+            The recorded StepRecord
+        """
+        from datetime import datetime, timezone
+        
+        ts = timestamp or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        
+        record = StepRecord(
+            session_id=self.session_id,
+            turn_id=self.turn_count,
+            step_number=step_number,
+            tool_name=tool_name,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            timestamp=ts,
+        )
+        self._step_history.append(record)
+        return record
+    
+    def record_steps_from_snapshot(self, snapshot: "ContextSnapshot") -> list[StepRecord]:
+        """Record steps from a ContextSnapshot's per_request_usage.
+        
+        Args:
+            snapshot: ContextSnapshot with per_request_usage data
+            
+        Returns:
+            List of StepRecords created
+        """
+        from datetime import datetime, timezone
+        
+        records = []
+        if not snapshot.per_request_usage:
+            return records
+        
+        # Get the steps for this turn (last N where N = turn's request count)
+        turn_usage = snapshot.turn_usage
+        if turn_usage and turn_usage.requests > 0:
+            turn_requests = snapshot.per_request_usage[-turn_usage.requests:]
+        else:
+            turn_requests = snapshot.per_request_usage
+        
+        for step_num, req in enumerate(turn_requests, start=1):
+            # Use first tool name or "Response" if no tools
+            tool_name = req.tool_names[0] if req.tool_names else "Response"
+            ts = req.timestamp or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            
+            record = StepRecord(
+                session_id=self.session_id,
+                turn_id=self.turn_count,
+                step_number=step_num,
+                tool_name=tool_name,
+                input_tokens=req.input_tokens,
+                output_tokens=req.output_tokens,
+                timestamp=ts,
+            )
+            self._step_history.append(record)
+            records.append(record)
+        
+        return records
+    
+    def get_step_history(self) -> list[StepRecord]:
+        """Get all recorded steps."""
+        return list(self._step_history)
+    
+    def to_csv(self, include_header: bool = True) -> str:
+        """Export all recorded steps as CSV string.
+        
+        Args:
+            include_header: Whether to include header row
+            
+        Returns:
+            CSV formatted string
+        """
+        lines = []
+        if include_header:
+            lines.append(StepRecord.csv_header())
+        for record in self._step_history:
+            lines.append(record.to_csv_row())
+        return "\n".join(lines)
+    
+    def save_csv(self, filepath: str) -> None:
+        """Save step history to CSV file.
+        
+        Args:
+            filepath: Path to save CSV file
+        """
+        with open(filepath, "w") as f:
+            f.write(self.to_csv())
 
 
 @dataclass
@@ -340,6 +753,8 @@ class ContextSnapshot:
                     "inputTokens": r.input_tokens,
                     "outputTokens": r.output_tokens,
                     "toolNames": r.tool_names,
+                    "timestamp": r.timestamp,
+                    "turnId": r.turn_id,
                 }
                 for r in self.per_request_usage
             ],
@@ -362,10 +777,13 @@ class ContextSnapshot:
             "distribution": self._build_distribution(),
         }
     
-    def to_table(self) -> "Table":
+    def to_table(self, show_context: bool = True) -> "Table":
         """Generate a Rich Table for CLI display.
         
-        Returns a 3-section table:
+        Args:
+            show_context: Whether to show the CONTEXT section. Defaults to True.
+        
+        Returns a 2 or 3-section table:
         - CONTEXT: System prompts, tool definitions, history, current user (with % of context window)
         - THIS TURN: Tool calls, requests, input/output tokens for current turn
         - SESSION: Cumulative totals across all turns
@@ -379,31 +797,32 @@ class ContextSnapshot:
         table.add_column("", width=40)
         
         # CONTEXT section - these are estimates (tiktoken may differ from model's tokenizer)
-        table.add_row("[bold cyan]═══ CONTEXT ═══[/]", "[dim]Tokens[/]", "[dim](estimated)[/]")
-        table.add_row("  System Prompts", str(self.system_prompt_tokens), "")
-        table.add_row("  Tool Definitions", str(self.tool_tokens), "")
-        table.add_row("  History", str(self.get_history_total()), "")
-        table.add_row("  User", str(self.current_user_tokens), "")
-        
-        context_total = self.get_context_total()
-        context_pct = self.get_context_percentage()
-        window_str = f"{self.context_window // 1000}K" if self.context_window else "?"
-        table.add_row(
-            "  [bold]→ Total[/]",
-            f"[bold]{context_total}[/]",
-            f"[dim]{context_pct:.1f}% of {window_str}[/]"
-        )
-        
-        # Separator
-        table.add_section()
+        if show_context:
+            table.add_row("[bold cyan]═══ CONTEXT ═══[/]", "[dim]Tokens[/]", "[dim](estimated)[/]")
+            table.add_row("  System Prompts", str(self.system_prompt_tokens), "")
+            table.add_row("  Tool Definitions", str(self.tool_tokens), "")
+            table.add_row("  History", str(self.get_history_total()), "")
+            table.add_row("  User", str(self.current_user_tokens), "")
+            
+            context_total = self.get_context_total()
+            context_pct = self.get_context_percentage()
+            window_str = f"{self.context_window // 1000}K" if self.context_window else "?"
+            table.add_row(
+                "  [bold]→ Total[/]",
+                f"[bold]{context_total}[/]",
+                f"[dim]{context_pct:.1f}% of {window_str}[/]"
+            )
+            
+            # Separator
+            table.add_section()
         
         # THIS TURN section - these are from the model (authoritative)
         table.add_row("[bold yellow]═══ TURN ═══[/]", "[dim]Count[/]", "")
         if self.turn_usage:
             tool_names_str = ", ".join(self.turn_usage.tool_names) if self.turn_usage.tool_names else ""
             table.add_row("  Tool Calls", str(self.turn_usage.tool_calls), f"[dim]{tool_names_str}[/]")
-            table.add_row("  Requests", str(self.turn_usage.requests), "")
-            table.add_row("", "[dim]Tokens[/]", "[dim](from model)[/]")
+            table.add_row("  Steps", str(self.turn_usage.requests), "")
+            table.add_row("", "[dim]Tokens[/]", "")
             
             # Show per-request breakdown if there are multiple requests
             if self.per_request_usage and len(self.per_request_usage) > 0:
@@ -411,11 +830,11 @@ class ContextSnapshot:
                 turn_requests = self.per_request_usage[-self.turn_usage.requests:] if self.turn_usage.requests > 0 else []
                 
                 if len(turn_requests) > 1:
-                    # Show individual requests
-                    for req in turn_requests:
+                    # Show individual requests with turn-relative numbering (starting at 1)
+                    for step_num, req in enumerate(turn_requests, start=1):
                         tools_str = f"[dim]{', '.join(req.tool_names)}[/]" if req.tool_names else ""
                         table.add_row(
-                            f"    Request {req.request_num}",
+                            f"    Step {step_num}",
                             f"{req.input_tokens} in / {req.output_tokens} out",
                             tools_str
                         )
@@ -438,9 +857,10 @@ class ContextSnapshot:
         # SESSION section
         table.add_row("[bold green]═══ SESSION ═══[/]", "[dim]Count[/]", "")
         if self.session_usage:
+            table.add_row("  Turns", str(self.session_usage.turns), "")
             table.add_row("  Tool Calls", str(self.session_usage.tool_calls), "")
-            table.add_row("  Requests", str(self.session_usage.requests), "")
-            table.add_row("", "[dim]Tokens[/]", "[dim](from model)[/]")
+            table.add_row("  Steps", str(self.session_usage.requests), "")
+            table.add_row("", "[dim]Tokens[/]", "")
             table.add_row("  Total Input", str(self.session_usage.input_tokens), "")
             table.add_row("  Total Output", str(self.session_usage.output_tokens), "")
         else:
@@ -902,6 +1322,7 @@ def extract_context_snapshot(
                     # Extract usage from the response if available
                     response_usage = getattr(message, "usage", None)
                     tool_names_in_response: list[str] = []
+                    message_timestamp = getattr(message, "timestamp", None)
                     if response_usage is not None:
                         resp_input = getattr(response_usage, "input_tokens", 0) or 0
                         resp_output = getattr(response_usage, "output_tokens", 0) or 0
@@ -916,6 +1337,14 @@ def extract_context_snapshot(
                                 if tool_name:
                                     tool_names_in_response.append(tool_name)
                         
+                        # Format timestamp for CSV export
+                        ts_str = None
+                        if message_timestamp:
+                            if hasattr(message_timestamp, "isoformat"):
+                                ts_str = message_timestamp.isoformat().replace("+00:00", "Z")
+                            else:
+                                ts_str = str(message_timestamp)
+                        
                         # Add per-request usage
                         request_num = len(snapshot.per_request_usage) + 1
                         snapshot.per_request_usage.append(RequestUsageSnapshot(
@@ -923,6 +1352,7 @@ def extract_context_snapshot(
                             input_tokens=resp_input,
                             output_tokens=resp_output,
                             tool_names=tool_names_in_response,
+                            timestamp=ts_str,
                         ))
                     
                     parts = getattr(message, "parts", [])

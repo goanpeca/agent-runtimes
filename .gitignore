@@ -48,6 +48,9 @@ storybook-static
 # Version file is handled by hatchling
 agent_runtimes/_version.py
 
+# Agent CLI config (contains local MCP server paths)
+examples/agent-codemode/agent_cli_config.json
+
 # Test environment files (contain secrets)
 .env.test
 .env.local
