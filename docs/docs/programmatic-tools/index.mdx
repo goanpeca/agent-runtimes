@@ -18,7 +18,7 @@ title: Programmatic Tools
 
 ## Toggles and behavior
 - **Enable Codemode**: adds `CodemodeToolset` (list/search tools, execute Python code). When Codemode is on, selected MCP servers are used to build Codemode’s registry (tools are exposed via Codemode meta-tools rather than direct MCP tools).
-- **Enable Skills**: adds `DatalayerSkillsToolset` (skills discovery, load, resource read, script run). Uses the configured `skills/` directory.
+- **Enable Skills**: adds `AgentSkillsToolset` (skills discovery, load, resource read, script run). Uses the configured `skills/` directory.
 - **Both on**: Skills remain available for loading/running scripts; Codemode is used for tool discovery and code execution.
 
 ## Codemode toolset capabilities
@@ -50,13 +50,13 @@ title: Programmatic Tools
 
 ## Skills model
 - Skills live in a `skills/` directory with `SKILL.md`, resources, and scripts.
-- Tooling provided by `DatalayerSkillsToolset`: `list_skills`, `load_skill`, `read_skill_resource`, `run_skill_script`.
+- Tooling provided by `AgentSkillsToolset`: `list_skills`, `load_skill`, `read_skill_resource`, `run_skill_script`.
 - Skills can be authored as files or programmatic callables; they complement Codemode when you want curated, reusable behaviors.
 
 ## UI & backend flow
 - UI checkboxes toggle Skills/Codemode. If Codemode is enabled, MCP server selection is still available and is used to scope Codemode discovery.
 - Backend route `/api/v1/agents` builds toolsets accordingly:
-	- Skills enabled → add `DatalayerSkillsToolset`.
+	- Skills enabled → add `AgentSkillsToolset`.
 	- Codemode enabled → add `CodemodeToolset` with `allow_direct_tool_calls=False` by default.
 
 ## Skills-first, Codemode glue (example)

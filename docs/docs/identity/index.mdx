@@ -957,7 +957,7 @@ Agent Runtimes supports two types of programmatic tool execution:
 
 | Execution Type | Description | Use Case |
 |----------------|-------------|----------|
-| **Skills** | Standalone Python scripts executed via `LocalPythonExecutor` or `SandboxExecutor` | Predefined, reusable automation scripts |
+| **Skills** | Standalone Python scripts executed via `SandboxExecutor` | Predefined, reusable automation scripts |
 | **Code Mode** | Dynamic Python code executed via `CodeModeExecutor` | Ad-hoc code that composes MCP tools |
 
 Both execution environments automatically receive OAuth tokens as environment variables when identities are connected.
@@ -1008,12 +1008,12 @@ Backend (Python):
 │                                               ▼                 ▼          │
 │                               ┌─────────────────────┐ ┌─────────────────┐  │
 │                               │ Skill Executors     │ │ CodeModeExecutor│  │
-│                               │ (LocalPython/       │ │ (execute_code)  │  │
-│                               │  Sandbox)           │ │                 │  │
+│                               │ (SandboxExecutor)   │ │ (execute_code)  │  │
+│                               │                     │ │                 │  │
 │                               └──────────┬──────────┘ └────────┬────────┘  │
 └──────────────────────────────────────────┼─────────────────────┼───────────┘
                                            │                     │
-                              subprocess with env    sandbox with env
+                                 sandbox with env      sandbox with env
                                            │                     │
                               ┌────────────▼────────┐ ┌──────────▼──────────┐
                               │ Skill Script        │ │ Code Mode Script    │
@@ -1164,21 +1164,18 @@ function CustomChat() {
 
 All executors automatically check the identity context and inject tokens:
 
-#### Skill Executors
+#### Skill Executor
 
 ```python
-from agent_skills import LocalPythonExecutor, SandboxExecutor
-
-# LocalPythonExecutor - identity context enabled by default
-executor = LocalPythonExecutor()
-
-# To disable identity context (e.g., for untrusted scripts)
-executor = LocalPythonExecutor(use_identity_context=False)
-
-# SandboxExecutor - also supports identity context
+from agent_skills import SandboxExecutor
 from code_sandboxes import LocalEvalSandbox
+
+# Create and start the sandbox
 sandbox = LocalEvalSandbox()
-executor = SandboxExecutor(sandbox)  # Uses run_code with envs parameter
+sandbox.start()
+
+# Create executor - identity context is automatically used
+executor = SandboxExecutor(sandbox)
 ```
 
 #### Code Mode Executor

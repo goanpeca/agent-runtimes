@@ -48,6 +48,7 @@ def set_api_prefix(prefix: str) -> None:
 def _build_codemode_toolset(
     request: "CreateAgentRequest",
     http_request: Request,
+    sandbox: Any | None = None,
 ):
     """Create a CodemodeToolset based on request flags and app configuration.
     
@@ -55,6 +56,11 @@ def _build_codemode_toolset(
     - Configures workspace, generated, and skills paths
     - Disables discovery tools by default to reduce LLM calls
     - Sets up proper CodeModeConfig with all required paths
+    
+    Args:
+        request: The CreateAgentRequest with configuration options.
+        http_request: The FastAPI request object for accessing app state.
+        sandbox: Optional pre-configured sandbox to share with other toolsets.
     """
     if not request.enable_codemode:
         return None
@@ -170,9 +176,11 @@ def _build_codemode_toolset(
     # - Use the config object
     # - Enable discovery tools so LLM can find available MCP tools
     # - Pass tool_reranker if configured
+    # - Pass sandbox if provided (to share with AgentSkillsToolset)
     return CodemodeToolset(
         registry=registry,
         config=config,
+        sandbox=sandbox,
         allow_discovery_tools=True,  # Enable discovery tools (search_tools, get_tool_details, etc.)
         tool_reranker=reranker,
     )
@@ -291,16 +299,29 @@ async def create_agent(request: CreateAgentRequest, http_request: Request) -> Cr
                     logger.info(f"Using {len(mcp_toolsets)} pre-loaded MCP toolsets for agent {agent_id}")
                     toolsets.extend(mcp_toolsets)
         
-        # Add skills toolset if enabled
+        # Create shared sandbox for both codemode and skills toolsets
+        # This ensures state persistence between execute_code and skill script executions
+        shared_sandbox = None
         skills_enabled = request.enable_skills or len(request.skills) > 0
+        if request.enable_codemode and skills_enabled:
+            try:
+                from code_sandboxes import LocalEvalSandbox
+                shared_sandbox = LocalEvalSandbox()
+                shared_sandbox.start()  # Must start before use by either toolset
+                logger.info(f"Created shared LocalEvalSandbox for agent {agent_id}")
+            except ImportError:
+                logger.warning("code_sandboxes not installed, cannot create shared sandbox")
+        
+        # Add skills toolset if enabled
         if skills_enabled:
             try:
                 from agent_skills import (
-                    DatalayerSkill,
-                    DatalayerSkillsToolset,
-                    LocalPythonExecutor,
+                    AgentSkill,
+                    AgentSkillsToolset,
+                    SandboxExecutor,
                     PYDANTIC_AI_AVAILABLE,
                 )
+                from code_sandboxes import LocalEvalSandbox
                 if PYDANTIC_AI_AVAILABLE:
                     repo_root = Path(__file__).resolve().parents[2]
                     skills_path = getattr(
@@ -312,10 +333,10 @@ async def create_agent(request: CreateAgentRequest, http_request: Request) -> Cr
                     selected = [s for s in request.skills if s]
                     if selected:
                         selected_set = set(selected)
-                        selected_skills: list[DatalayerSkill] = []
+                        selected_skills: list[AgentSkill] = []
                         for skill_md in Path(skills_path).rglob("SKILL.md"):
                             try:
-                                skill = DatalayerSkill.from_skill_md(skill_md)
+                                skill = AgentSkill.from_skill_md(skill_md)
                             except Exception as exc:
                                 logger.warning(
                                     "Failed to load skill from %s: %s",
@@ -335,20 +356,36 @@ async def create_agent(request: CreateAgentRequest, http_request: Request) -> Cr
                             )
 
                         # Create executor for running skill scripts
-                        executor = LocalPythonExecutor()
-                        skills_toolset = DatalayerSkillsToolset(
+                        # Use shared sandbox if available for state persistence with codemode
+                        if shared_sandbox is not None:
+                            executor = SandboxExecutor(shared_sandbox)
+                            logger.info(f"Using shared sandbox for skills executor (agent {agent_id})")
+                        else:
+                            # Create dedicated sandbox for skills
+                            skills_sandbox = LocalEvalSandbox()
+                            skills_sandbox.start()
+                            executor = SandboxExecutor(skills_sandbox)
+                        skills_toolset = AgentSkillsToolset(
                             skills=selected_skills,
                             executor=executor,
                         )
                     else:
                         # Create executor for running skill scripts
-                        executor = LocalPythonExecutor()
-                        skills_toolset = DatalayerSkillsToolset(
+                        # Use shared sandbox if available for state persistence with codemode
+                        if shared_sandbox is not None:
+                            executor = SandboxExecutor(shared_sandbox)
+                            logger.info(f"Using shared sandbox for skills executor (agent {agent_id})")
+                        else:
+                            # Create dedicated sandbox for skills
+                            skills_sandbox = LocalEvalSandbox()
+                            skills_sandbox.start()
+                            executor = SandboxExecutor(skills_sandbox)
+                        skills_toolset = AgentSkillsToolset(
                             directories=[skills_path],  # TODO: Make configurable
                             executor=executor,
                         )
                     toolsets.append(skills_toolset)
-                    logger.info(f"Added DatalayerSkillsToolset for agent {agent_id}")
+                    logger.info(f"Added AgentSkillsToolset for agent {agent_id}")
                 else:
                     logger.warning("agent-skills pydantic-ai integration not available")
             except ImportError:
@@ -364,7 +401,7 @@ async def create_agent(request: CreateAgentRequest, http_request: Request) -> Cr
                 logger.info(
                     f"Loaded {len(mcp_servers)} MCP servers for codemode agent {agent_id}"
                 )
-            codemode_toolset = _build_codemode_toolset(request, http_request)
+            codemode_toolset = _build_codemode_toolset(request, http_request, sandbox=shared_sandbox)
             if codemode_toolset is not None:
                 # Initialize the toolset to discover tools and generate bindings
                 # This must happen before the agent can use execute_code

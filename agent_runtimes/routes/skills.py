@@ -53,7 +53,7 @@ def _get_skills_path(request: Request) -> Path:
 def _discover_skills_from_directory(skills_path: Path) -> list[SkillInfo]:
     """Discover skills using agent-skills library.
     
-    Uses DatalayerSkill.from_skill_md() for proper skill parsing.
+    Uses AgentSkill.from_skill_md() for proper skill parsing.
     
     Args:
         skills_path: Path to skills directory.
@@ -68,7 +68,7 @@ def _discover_skills_from_directory(skills_path: Path) -> list[SkillInfo]:
         return skills
     
     try:
-        from agent_skills import DatalayerSkill
+        from agent_skills import AgentSkill
     except ImportError:
         logger.warning("agent-skills package not installed, cannot discover skills")
         return skills
@@ -76,7 +76,7 @@ def _discover_skills_from_directory(skills_path: Path) -> list[SkillInfo]:
     # Discover skills by finding SKILL.md files
     for skill_md in skills_path.rglob("SKILL.md"):
         try:
-            skill = DatalayerSkill.from_skill_md(skill_md)
+            skill = AgentSkill.from_skill_md(skill_md)
             skills.append(SkillInfo(
                 id=skill.name,
                 name=skill.name,
@@ -165,7 +165,7 @@ async def get_skill_content(skill_id: str, request: Request) -> dict[str, Any]:
         HTTPException: If skill is not found.
     """
     try:
-        from agent_skills import DatalayerSkill
+        from agent_skills import AgentSkill
     except ImportError:
         raise HTTPException(
             status_code=500,
@@ -178,7 +178,7 @@ async def get_skill_content(skill_id: str, request: Request) -> dict[str, Any]:
         # Find the skill
         for skill_md in skills_path.rglob("SKILL.md"):
             try:
-                skill = DatalayerSkill.from_skill_md(skill_md)
+                skill = AgentSkill.from_skill_md(skill_md)
                 if skill.name == skill_id:
                     return {
                         "id": skill.name,
