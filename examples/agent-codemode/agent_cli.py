@@ -29,18 +29,13 @@ except ImportError:
 
 try:
     from rich.console import Console
-    from rich.table import Table
     HAS_RICH = True
 except ImportError:
     HAS_RICH = False
 
 from agent_runtimes.context import (
-    extract_context_snapshot,
-    get_model_context_window,
     UsageTracker,
-    format_usage,
 )
-HAS_CONTEXT_SNAPSHOT = True
 
 logger = logging.getLogger(__name__)
 
@@ -150,60 +145,16 @@ def _build_system_prompt(
         "2. **Understand**: Use get_tool_details to check parameters",
         "3. **Execute**: Use call_tool for simple ops OR execute_code for complex workflows",
         "",
+        "## Token Efficiency",
+        "When possible, chain multiple tool calls in a single execute_code block.",
+        "This reduces output tokens by processing intermediate results in code rather than returning them.",
+        "If you want to examine results, print subsets, preview (maximum 20 first characters) and/or counts instead of full data, this is really important.",
+        "",
     ]
     return "\n".join(lines)
 
 
-def _usage_to_table(
-    prompt_usage: object,
-    session_usage: object,
-    keys: Optional[list[str]] = None,
-) -> "Table":
-    from agent_runtimes.context import usage_to_dict
-    prompt_data = usage_to_dict(prompt_usage)
-    session_data = usage_to_dict(session_usage)
-    table = Table(title="Token usage")
-    table.add_column("Metric", style="cyan", no_wrap=True)
-    table.add_column("Prompt", style="cyan")
-    table.add_column("Session", style="cyan")
 
-    preferred = keys or [
-        "input_tokens",
-        "output_tokens",
-        "total_tokens",
-        "requests",
-        "cached_tokens",
-        "billable_tokens",
-    ]
-
-    if not prompt_data and not session_data:
-        table.add_row("usage", "N/A", "N/A")
-        return table
-
-    def _format_value(value: object) -> str:
-        if value is None:
-            return "-"
-        if isinstance(value, float):
-            if value.is_integer():
-                return str(int(value))
-            return str(value)
-        if isinstance(value, (int, bool)):
-            return str(value)
-        return str(value)
-
-    for key in preferred:
-        if key in prompt_data or key in session_data:
-            table.add_row(
-                key,
-                _format_value(prompt_data.get(key, "-")),
-                _format_value(session_data.get(key, "-")),
-            )
-
-
-    if table.row_count == 0:
-        table.add_row("usage", str(prompt_data or "-"), str(session_data or "-"))
-
-    return table
 
 
 async def _dump_context_to_file(
@@ -474,10 +425,12 @@ def create_agent(model: str, codemode: bool) -> tuple[Agent, object | None]:
         # Load MCP servers from config file
         mcp_configs = _load_mcp_config()
         if mcp_configs:
+            print(f"Loading {len(mcp_configs)} MCP server(s) from config...")
             for server_config in mcp_configs:
                 name = server_config.get("name", "mcp_server")
                 command = server_config.get("command", sys.executable)
                 args = server_config.get("args", [])
+                env = server_config.get("env", {})
                 # Resolve relative paths
                 resolved_args = []
                 config_dir = Path(_resolve_config_path()).parent
@@ -491,8 +444,10 @@ def create_agent(model: str, codemode: bool) -> tuple[Agent, object | None]:
                         name=name,
                         command=command,
                         args=resolved_args,
+                        env=env,
                     )
                 )
+                print(f"  - Added server: {name}")
                 logger.debug("Added MCP server from config: %s", name)
         else:
             # Fallback to default example_mcp server
@@ -599,10 +554,16 @@ def main() -> None:
         action="store_true",
         help="Enable Agent Codemode mode"
     )
+    parser.add_argument(
+        "-q", "--query",
+        type=str,
+        help="Run a single query and exit"
+    )
     args = parser.parse_args()
     
     model = args.model
     codemode = args.codemode
+    query = getattr(args, 'query', None)
 
     print("\n" + "=" * 72)
     if codemode:
@@ -615,13 +576,6 @@ def main() -> None:
 
     print("\n📋 Example prompts:")
     print(_build_prompt_examples(codemode))
-
-    # print("\nCommands:")
-    # print("  /exit      - Exit the CLI")
-    # print("  /markdown  - Toggle markdown rendering")
-    # print("  /multiline - Enter multiline mode")
-    # print("  /cp        - Copy last response to clipboard")
-    # print("\n" + "=" * 72 + "\n")
 
     agent, codemode_toolset = create_agent(model=model, codemode=codemode)
 
@@ -642,6 +596,60 @@ def main() -> None:
                 return
 
         async with agent:
+            # Handle single query mode
+            if query:
+                usage_tracker.start_turn()
+                async with agent.iter(query, message_history=message_history) as run:
+                    run_result = run.result
+                    run_usage = run.usage()
+                    message_history = run.all_messages()
+
+                if run_result is not None:
+                    reply = getattr(run_result, "output", None) or getattr(run_result, "data", None) or str(run_result)
+                    print(reply)
+
+                    # Record and display usage
+                    codemode_counts = None
+                    if codemode and codemode_toolset is not None:
+                        if hasattr(codemode_toolset, "get_call_counts"):
+                            codemode_counts = codemode_toolset.get_call_counts()
+                    usage_tracker.record_turn(run_usage, codemode_counts)
+
+                    if HAS_RICH:
+                        console = Console()
+                        console.print()
+                        
+                        from agent_runtimes.context import extract_context_snapshot, get_model_context_window
+                        
+                        turn_usage = usage_tracker.get_turn_usage()
+                        session_usage_obj = usage_tracker.get_session_usage()
+                        context_window = get_model_context_window(model)
+
+                        snapshot = extract_context_snapshot(
+                            agent, "agent_cli",
+                            context_window=context_window,
+                            message_history=message_history,
+                            model_input_tokens=turn_usage.input_tokens,
+                            model_output_tokens=turn_usage.output_tokens,
+                            turn_usage=turn_usage,
+                            session_usage=session_usage_obj,
+                            tool_definitions=None,
+                            turn_start_time=usage_tracker._turn_start_time,
+                        )
+
+                        per_req = snapshot.per_request_usage if hasattr(snapshot, 'per_request_usage') else []
+                        tool_names = []
+                        for r in per_req[-turn_usage.requests:]:
+                            tool_names.extend(r.tool_names)
+                        if tool_names and snapshot.turn_usage:
+                            snapshot.turn_usage.tool_names = tool_names
+
+                        console.print(snapshot.to_table(show_context=False))
+                    else:
+                        print(f"\nToken usage (prompt): {usage_tracker.format_turn_usage()}")
+                        print(f"Token usage (session): {usage_tracker.format_session_usage()}")
+                return
+
             mcp_server_path = _resolve_mcp_server_path()
             while True:
                 if multiline:
@@ -710,7 +718,7 @@ def main() -> None:
                 run_result = None
                 run_usage = None
                 iteration_count = 0
-                captured_tool_defs: list[tuple[str, str | None, dict]] = []
+                usage_tracker.start_turn()
                 async with agent.iter(user_input, message_history=message_history) as run:
                     async for node in run:
                         iteration_count += 1
@@ -743,20 +751,7 @@ def main() -> None:
                     # Update message history with the conversation
                     message_history = run.all_messages()
                     
-                    # Capture tool definitions while MCP servers are still connected
-                    # This must happen inside the context before _cached_tools is cleared
-                    if HAS_CONTEXT_SNAPSHOT:
-                        for toolset in agent.toolsets:
-                            # MCP servers have _cached_tools as list
-                            if hasattr(toolset, "_cached_tools") and toolset._cached_tools:
-                                for tool in toolset._cached_tools:
-                                    name = getattr(tool, "name", None)
-                                    if name:
-                                        captured_tool_defs.append((
-                                            name,
-                                            getattr(tool, "description", None),
-                                            getattr(tool, "inputSchema", {}),
-                                        ))
+
 
                 if run_result is None:
                     print("No result returned.")
@@ -780,66 +775,41 @@ def main() -> None:
                 if HAS_RICH:
                     console = Console()
                     console.print()
-                    console.print(
-                        _usage_to_table(
-                            usage_tracker.get_turn_data(),
-                            usage_tracker.get_session_data(),
-                            UsageTracker.DEFAULT_USAGE_KEYS,
-                        )
+                    
+                    # Use the original extract_context_snapshot approach
+                    from agent_runtimes.context import extract_context_snapshot, get_model_context_window
+                    
+                    turn_usage = usage_tracker.get_turn_usage()
+                    session_usage_obj = usage_tracker.get_session_usage()
+
+                    # Get context window for the model
+                    context_window = get_model_context_window(model)
+
+                    snapshot = extract_context_snapshot(
+                        agent, "agent_cli",
+                        context_window=context_window,
+                        message_history=message_history,
+                        model_input_tokens=turn_usage.input_tokens,
+                        model_output_tokens=turn_usage.output_tokens,
+                        turn_usage=turn_usage,
+                        session_usage=session_usage_obj,
+                        tool_definitions=None,
                     )
-                    # Display context snapshot
-                    if HAS_CONTEXT_SNAPSHOT:
-                        try:
-                            turn_usage = usage_tracker.get_turn_usage()
-                            session_usage_obj = usage_tracker.get_session_usage()
-                            
-                            # Get context window for the model
-                            context_window = get_model_context_window(model)
-                            
-                            snapshot = extract_context_snapshot(
-                                agent, "agent_cli",
-                                context_window=context_window,
-                                message_history=message_history,
-                                model_input_tokens=turn_usage.input_tokens,
-                                model_output_tokens=turn_usage.output_tokens,
-                                turn_usage=turn_usage,
-                                session_usage=session_usage_obj,
-                                tool_definitions=captured_tool_defs if captured_tool_defs else None,
-                            )
-                            
-                            # Get tool names from per_request_usage (last N requests for this turn)
-                            # Each request can have multiple tools, so flatten the lists
-                            per_req = snapshot.per_request_usage if hasattr(snapshot, 'per_request_usage') else []
-                            tool_names = []
-                            for r in per_req[-turn_usage.requests:]:
-                                tool_names.extend(r.tool_names)
-                            if tool_names and snapshot.turn_usage:
-                                snapshot.turn_usage.tool_names = tool_names
-                            
-                            console.print(snapshot.to_table(show_context=False))
-                        except Exception as e:
-                            logger.debug("Could not display context snapshot: %s", e)
+
+                    # Get tool names from per_request_usage (last N requests for this turn)
+                    # Each request can have multiple tools, so flatten the lists
+                    per_req = snapshot.per_request_usage if hasattr(snapshot, 'per_request_usage') else []
+                    tool_names = []
+                    for r in per_req[-turn_usage.requests:]:
+                        tool_names.extend(r.tool_names)
+                    if tool_names and snapshot.turn_usage:
+                        snapshot.turn_usage.tool_names = tool_names
+
+                    console.print(snapshot.to_table(show_context=False))
                     console.print()
                 else:
                     print(f"\nToken usage (prompt): {usage_tracker.format_turn_usage()}")
                     print(f"Token usage (session): {usage_tracker.format_session_usage()}\n")
-                    # Display context snapshot (plain text fallback)
-                    if HAS_CONTEXT_SNAPSHOT:
-                        try:
-                            turn_data = usage_tracker.get_turn_data()
-                            model_input_tokens = turn_data.get("input_tokens")
-                            model_output_tokens = turn_data.get("output_tokens")
-                            snapshot = extract_context_snapshot(
-                                agent, "agent_cli", 
-                                message_history=message_history,
-                                model_input_tokens=model_input_tokens,
-                                model_output_tokens=model_output_tokens,
-                                tool_definitions=captured_tool_defs if captured_tool_defs else None,
-                            )
-                            model_str = f" (model: {snapshot.model_input_tokens})" if snapshot.model_input_tokens else ""
-                            print(f"Context: {snapshot.total_tokens}{model_str}/{snapshot.context_window} tokens ({snapshot.total_tokens/snapshot.context_window*100:.1f}%)")
-                        except Exception as e:
-                            logger.debug("Could not display context snapshot: %s", e)
 
     try:
         asyncio.run(_run_cli())
