@@ -5,7 +5,7 @@
 
 /** @type {import('@docusaurus/types').DocusaurusConfig} */
 module.exports = {
-  title: 'Ξ Agent Runtimes',
+  title: '☰ Agent Runtimes',
   tagline: '🤖 Agent Runtimes - Expose AI Agents through multiple protocols.',
   url: 'https://agent-runtimes.datalayer.tech',
   baseUrl: '/',

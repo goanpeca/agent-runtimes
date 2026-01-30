@@ -90,7 +90,6 @@
     "rebuild:fresh": "npm run create:patches && npm install && npm run build && npm run clean:cache",
     "server": "python -m agent_runtimes",
     "server:start": "PYTHONIOENCODING=utf-8 python -m agent_runtimes --port 8765 --reload --debug",
-    "showcase:vercel-ai-elements": "VITE_APP_TARGET=showcase-vercel-ai-elements vite",
     "start": "vite",
     "start:acp": "run-p server:start start:acp:vite",
     "start:acp:prod": "run-p server start:acp:vite",
