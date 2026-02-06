@@ -88,7 +88,6 @@ class CodemodeIntegration:
             from agent_codemode import (
                 CodeModeConfig,
                 CodeModeExecutor,
-                MCPServerConfig,
                 ToolRegistry,
             )
             from agent_skills.simple import SimpleSkillsManager
@@ -125,7 +124,7 @@ class CodemodeIntegration:
             config = CodeModeConfig(
                 skills_path=self.skills_path,
                 sandbox_variant=self.sandbox_variant,
-                mcp_proxy_url=mcp_proxy_url,
+                **({} if mcp_proxy_url is None else {"mcp_proxy_url": mcp_proxy_url}),
             )
             self._executor = CodeModeExecutor(self._registry, config)
             await self._executor.setup()
