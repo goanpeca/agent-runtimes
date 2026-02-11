@@ -537,6 +537,8 @@ async def create_agent(
                 from ..services.code_sandbox_manager import get_code_sandbox_manager
 
                 sandbox_manager = get_code_sandbox_manager()
+                # Env vars from the request body are not available here;
+                # they are injected later by the companion via /mcp-servers/start
                 sandbox_manager.configure_from_url(request.jupyter_sandbox)
                 logger.info(
                     f"Configured sandbox manager for Jupyter: {request.jupyter_sandbox.split('?')[0]}"
@@ -594,9 +596,9 @@ async def create_agent(
                 from ..services.code_sandbox_manager import get_code_sandbox_manager
 
                 sandbox_manager = get_code_sandbox_manager()
-                shared_sandbox = sandbox_manager.get_sandbox()
+                shared_sandbox = sandbox_manager.get_managed_sandbox()
                 logger.info(
-                    f"Created shared {sandbox_manager.variant} sandbox for agent {agent_id}"
+                    f"Created managed sandbox proxy (variant={sandbox_manager.variant}) for agent {agent_id}"
                 )
             except ImportError as e:
                 logger.warning(
@@ -651,7 +653,7 @@ async def create_agent(
                         if shared_sandbox is not None:
                             executor = SandboxExecutor(shared_sandbox)
                             logger.info(
-                                f"Using shared sandbox for skills executor (agent {agent_id})"
+                                f"Using shared managed sandbox for skills executor (agent {agent_id})"
                             )
                         else:
                             # Use CodeSandboxManager for skills-only sandbox
@@ -660,7 +662,7 @@ async def create_agent(
                             )
 
                             sandbox_manager = get_code_sandbox_manager()
-                            skills_sandbox = sandbox_manager.get_sandbox()
+                            skills_sandbox = sandbox_manager.get_managed_sandbox()
                             executor = SandboxExecutor(skills_sandbox)
                         skills_toolset = AgentSkillsToolset(
                             skills=selected_skills,
@@ -672,7 +674,7 @@ async def create_agent(
                         if shared_sandbox is not None:
                             executor = SandboxExecutor(shared_sandbox)
                             logger.info(
-                                f"Using shared sandbox for skills executor (agent {agent_id})"
+                                f"Using shared managed sandbox for skills executor (agent {agent_id})"
                             )
                         else:
                             # Use CodeSandboxManager for skills-only sandbox
@@ -681,7 +683,7 @@ async def create_agent(
                             )
 
                             sandbox_manager = get_code_sandbox_manager()
-                            skills_sandbox = sandbox_manager.get_sandbox()
+                            skills_sandbox = sandbox_manager.get_managed_sandbox()
                             executor = SandboxExecutor(skills_sandbox)
                         skills_toolset = AgentSkillsToolset(
                             directories=[skills_path],  # TODO: Make configurable
@@ -788,10 +790,8 @@ async def create_agent(
                 def rebuild_codemode(new_servers: list[str | dict[str, str]]) -> Any:
                     """Rebuild codemode toolset with new MCP server selection.
 
-                    IMPORTANT: Gets a fresh sandbox from CodeSandboxManager each time.
-                    This ensures that if the sandbox manager was reconfigured
-                    (e.g., from local-eval to local-jupyter via the /mcp-servers/start API),
-                    the rebuilt codemode will use the new sandbox configuration.
+                    Uses a ManagedSandbox proxy so the rebuilt toolset
+                    automatically tracks any sandbox reconfiguration.
                     """
                     # Create a temporary request object with new servers
                     import copy
@@ -799,8 +799,8 @@ async def create_agent(
                     temp_request = copy.copy(request)
                     temp_request.selected_mcp_servers = new_servers  # type: ignore[assignment]
 
-                    # Get fresh sandbox from manager (may have been reconfigured)
-                    # Do NOT use the captured shared_sandbox from agent creation time
+                    # Use a managed sandbox proxy so the rebuilt toolset
+                    # always delegates to the manager's current sandbox
                     fresh_sandbox = None
                     try:
                         from ..services.code_sandbox_manager import (
@@ -808,9 +808,9 @@ async def create_agent(
                         )
 
                         sandbox_manager = get_code_sandbox_manager()
-                        fresh_sandbox = sandbox_manager.get_sandbox()
+                        fresh_sandbox = sandbox_manager.get_managed_sandbox()
                         logger.info(
-                            f"Rebuild codemode using {sandbox_manager.variant} sandbox"
+                            f"Rebuild codemode using managed sandbox proxy (variant={sandbox_manager.variant})"
                         )
                     except ImportError as e:
                         logger.warning(f"code_sandboxes not available: {e}")
@@ -1535,6 +1535,11 @@ class AgentMcpServersResponse(BaseModel):
     mcp_proxy_url: str | None = Field(
         default=None, description="The MCP proxy URL configured for tool calls (if any)"
     )
+    env_vars_set: int = Field(
+        default=0,
+        description="Number of env vars set on the process environment (and forwarded to MCP subprocesses). "
+        "For local-jupyter sandboxes they are also injected into the kernel when it is first used.",
+    )
     message: str
 
 
@@ -1661,7 +1666,12 @@ async def _start_mcp_servers_for_agent(
             logger.info(
                 f"_start_mcp_servers_for_agent: Starting server '{server_id}'..."
             )
-            instance = await lifecycle_manager.start_server(server_id, config)
+            # Pass env vars explicitly so MCP subprocess gets them even if
+            # os.environ was not populated (robust, order-independent).
+            extra_env = {ev.name: ev.value for ev in env_vars} if env_vars else None
+            instance = await lifecycle_manager.start_server(
+                server_id, config, extra_env=extra_env
+            )
             if instance is not None:
                 logger.info(
                     f"_start_mcp_servers_for_agent: ✓ Successfully started server '{server_id}'"
@@ -1796,10 +1806,20 @@ async def start_all_agents_mcp_servers(
         )
 
     try:
-        # Set environment variables before starting servers
+        # Set environment variables on the agent-runtimes process.
+        # These are propagated to:
+        #  1. MCP server subprocesses (npx, uvx, docker) via extra_env
+        #     passed explicitly to lifecycle_manager.start_server()
+        #  2. The Jupyter kernel via _inject_env_vars() in the sandbox
+        #     manager (runs `import os; os.environ[k] = v` in the kernel)
+        env_var_names = [ev.name for ev in body.env_vars]
         for env_var in body.env_vars:
             os.environ[env_var.name] = env_var.value
-            logger.info(f"Set environment variable: {env_var.name}")
+        if env_var_names:
+            logger.info(
+                f"Set {len(env_var_names)} env var(s) on process + "
+                f"will pass to MCP subprocesses and sandbox kernel: {env_var_names}"
+            )
 
         # Configure sandbox manager if jupyter_sandbox is provided
         # For two-container setups, also configure the MCP proxy URL
@@ -1811,10 +1831,18 @@ async def start_all_agents_mcp_servers(
                 from ..services.code_sandbox_manager import get_code_sandbox_manager
 
                 sandbox_manager = get_code_sandbox_manager()
-                # Pass both jupyter URL and MCP proxy URL for two-container setup
+                # Pass jupyter URL, MCP proxy URL, and env vars for two-container setup.
+                # Env vars will be injected into the Jupyter kernel's os.environ
+                # so that code executed in the kernel can access API keys, etc.
+                env_dict = (
+                    {ev.name: ev.value for ev in body.env_vars}
+                    if body.env_vars
+                    else None
+                )
                 sandbox_manager.configure_from_url(
                     body.jupyter_sandbox,
                     mcp_proxy_url=body.mcp_proxy_url,
+                    env_vars=env_dict,
                 )
                 sandbox_configured = True
                 sandbox_variant = sandbox_manager.variant
@@ -1858,6 +1886,10 @@ async def start_all_agents_mcp_servers(
         if mcp_proxy_url:
             message_parts.append(f"mcp_proxy={mcp_proxy_url}")
 
+        env_count = len(body.env_vars) if body.env_vars else 0
+        if env_count:
+            message_parts.append(f"env_vars={env_count}")
+
         return AgentMcpServersResponse(
             agent_id=None,
             agents_processed=agents_processed,
@@ -1868,6 +1900,7 @@ async def start_all_agents_mcp_servers(
             sandbox_configured=sandbox_configured,
             sandbox_variant=sandbox_variant,
             mcp_proxy_url=mcp_proxy_url,
+            env_vars_set=env_count,
             message=", ".join(message_parts),
         )
 
@@ -1915,10 +1948,16 @@ async def start_agent_mcp_servers(
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
 
     try:
-        # Set environment variables before starting servers
+        # Set environment variables on the agent-runtimes process.
+        # Propagated to MCP subprocesses (via extra_env) and Jupyter
+        # kernel (via _inject_env_vars).
+        env_var_names = [ev.name for ev in body.env_vars]
         for env_var in body.env_vars:
             os.environ[env_var.name] = env_var.value
-            logger.info(f"Set environment variable: {env_var.name}")
+        if env_var_names:
+            logger.info(
+                f"Set {len(env_var_names)} env var(s) for agent '{agent_id}': {env_var_names}"
+            )
 
         # Configure sandbox manager if jupyter_sandbox is provided
         # For two-container setups, also configure the MCP proxy URL
@@ -1930,10 +1969,16 @@ async def start_agent_mcp_servers(
                 from ..services.code_sandbox_manager import get_code_sandbox_manager
 
                 sandbox_manager = get_code_sandbox_manager()
-                # Pass both jupyter URL and MCP proxy URL for two-container setup
+                # Pass jupyter URL, MCP proxy URL, and env vars for two-container setup.
+                env_dict = (
+                    {ev.name: ev.value for ev in body.env_vars}
+                    if body.env_vars
+                    else None
+                )
                 sandbox_manager.configure_from_url(
                     body.jupyter_sandbox,
                     mcp_proxy_url=body.mcp_proxy_url,
+                    env_vars=env_dict,
                 )
                 sandbox_configured = True
                 sandbox_variant = sandbox_manager.variant
@@ -1976,6 +2021,10 @@ async def start_agent_mcp_servers(
         if mcp_proxy_url:
             message_parts.append(f"mcp_proxy={mcp_proxy_url}")
 
+        env_count = len(body.env_vars) if body.env_vars else 0
+        if env_count:
+            message_parts.append(f"env_vars={env_count}")
+
         return AgentMcpServersResponse(
             agent_id=agent_id,
             agents_processed=[agent_id],
@@ -1986,6 +2035,7 @@ async def start_agent_mcp_servers(
             sandbox_configured=sandbox_configured,
             sandbox_variant=sandbox_variant,
             mcp_proxy_url=mcp_proxy_url,
+            env_vars_set=env_count,
             message=", ".join(message_parts)
             if message_parts
             else "No servers to start",

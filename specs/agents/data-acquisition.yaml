@@ -23,12 +23,14 @@ enabled: true
 mcp_servers:
   - kaggle
   - filesystem
+  - tavily
 
 # Skills available to this agent
-skills: []
+skills:
+  - github
 
 # Runtime environment
-environment_name: ai-agents
+environment_name: ai-agents-env
 
 # UI customization
 icon: database

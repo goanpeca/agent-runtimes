@@ -20,13 +20,13 @@ from agent_runtimes.types import AgentSpec
 
 CRAWLER_MCP_AGENT_SPEC = AgentSpec(
     id="crawler-mcp",
-    name="Crawler Agent",
+    name="Crawler Agent (MCP)",
     description="Web crawling and research agent that searches the web and GitHub repositories for information.",
     tags=["web", "search", "research", "crawler", "github"],
-    enabled=True,
+    enabled=False,
     mcp_servers=[MCP_SERVER_CATALOG["tavily"], MCP_SERVER_CATALOG["github"]],
     skills=[],
-    environment_name="ai-agents",
+    environment_name="ai-agents-env",
     icon="globe",
     color="#10B981",
     suggestions=[
@@ -66,10 +66,10 @@ CRAWLER_AGENT_SPEC = AgentSpec(
     name="Crawler Agent",
     description="Web crawling and research agent that searches the web and GitHub repositories for information.",
     tags=["web", "search", "research", "crawler", "github"],
-    enabled=True,
+    enabled=False,
     mcp_servers=[MCP_SERVER_CATALOG["tavily"]],
     skills=["github"],
-    environment_name="ai-agents",
+    environment_name="ai-agents-env",
     icon="globe",
     color="#10B981",
     suggestions=[
@@ -110,9 +110,13 @@ DATA_ACQUISITION_AGENT_SPEC = AgentSpec(
     description="Acquires and manages data from various sources including Kaggle datasets and local filesystem operations.",
     tags=["data", "acquisition", "kaggle", "filesystem"],
     enabled=True,
-    mcp_servers=[MCP_SERVER_CATALOG["kaggle"], MCP_SERVER_CATALOG["filesystem"]],
-    skills=[],
-    environment_name="ai-agents",
+    mcp_servers=[
+        MCP_SERVER_CATALOG["kaggle"],
+        MCP_SERVER_CATALOG["filesystem"],
+        MCP_SERVER_CATALOG["tavily"],
+    ],
+    skills=["github"],
+    environment_name="ai-agents-env",
     icon="database",
     color="#3B82F6",
     suggestions=[
@@ -149,13 +153,13 @@ DATA_ACQUISITION_AGENT_SPEC = AgentSpec(
 
 FINANCIAL_VIZ_AGENT_SPEC = AgentSpec(
     id="financial-viz",
-    name="Financial Visualization Agent",
+    name="Financial Visualization Agent (Viz)",
     description="Analyzes financial market data and creates visualizations and charts.",
     tags=["finance", "stocks", "visualization", "charts"],
-    enabled=True,
+    enabled=False,
     mcp_servers=[MCP_SERVER_CATALOG["alphavantage"], MCP_SERVER_CATALOG["chart"]],
     skills=[],
-    environment_name="ai-agents",
+    environment_name="ai-agents-env",
     icon="trending-up",
     color="#F59E0B",
     suggestions=[
@@ -195,10 +199,10 @@ FINANCIAL_AGENT_SPEC = AgentSpec(
     name="Financial Visualization Agent",
     description="Analyzes financial market data and creates visualizations and charts.",
     tags=["finance", "stocks", "visualization", "charts"],
-    enabled=True,
+    enabled=False,
     mcp_servers=[MCP_SERVER_CATALOG["alphavantage"]],
     skills=[],
-    environment_name="ai-agents",
+    environment_name="ai-agents-env",
     icon="trending-up",
     color="#F59E0B",
     suggestions=[
@@ -238,10 +242,10 @@ GITHUB_AGENT_MCP_AGENT_SPEC = AgentSpec(
     name="GitHub Agent",
     description="Manages GitHub repositories, issues, and pull requests with email notification capabilities.",
     tags=["github", "git", "code", "email"],
-    enabled=True,
+    enabled=False,
     mcp_servers=[MCP_SERVER_CATALOG["github"], MCP_SERVER_CATALOG["google-workspace"]],
     skills=[],
-    environment_name="ai-agents",
+    environment_name="ai-agents-env",
     icon="git-branch",
     color="#6366F1",
     suggestions=[
@@ -281,10 +285,10 @@ GITHUB_AGENT_SPEC = AgentSpec(
     name="GitHub Agent",
     description="Manages GitHub repositories, issues, and pull requests with email notification capabilities.",
     tags=["github", "git", "code", "email"],
-    enabled=True,
+    enabled=False,
     mcp_servers=[MCP_SERVER_CATALOG["google-workspace"]],
     skills=["github"],
-    environment_name="ai-agents",
+    environment_name="ai-agents-env",
     icon="git-branch",
     color="#6366F1",
     suggestions=[
@@ -324,10 +328,10 @@ INFORMATION_ROUTING_AGENT_SPEC = AgentSpec(
     name="Information Routing Agent",
     description="Routes information between Google Drive and Slack, managing document workflows and team communication.",
     tags=["workflow", "communication", "gdrive", "slack"],
-    enabled=True,
+    enabled=False,
     mcp_servers=[MCP_SERVER_CATALOG["google-workspace"], MCP_SERVER_CATALOG["slack"]],
     skills=[],
-    environment_name="ai-agents",
+    environment_name="ai-agents-env",
     icon="share-2",
     color="#EC4899",
     suggestions=[
@@ -362,6 +366,31 @@ INFORMATION_ROUTING_AGENT_SPEC = AgentSpec(
 """,
 )
 
+SIMPLE_AGENT_SPEC = AgentSpec(
+    id="simple",
+    name="A Simple Agent",
+    description="A simple conversational agent. No tools, no MCP servers, no skills — just a helpful AI assistant you can chat with.",
+    tags=["simple", "chat", "assistant"],
+    enabled=True,
+    mcp_servers=[],
+    skills=[],
+    environment_name="ai-agents-env",
+    icon="share-2",
+    color="#6366F1",
+    suggestions=[
+        "Tell me a joke",
+        "Explain quantum computing in simple terms",
+        "Help me brainstorm ideas for a weekend project",
+        "Summarize the key points of a topic I describe",
+    ],
+    welcome_message="Hi! I'm a simple assistant. I don't have any special tools, but I'm happy to chat, answer questions, and help you think through ideas. ",
+    welcome_notebook=None,
+    welcome_document=None,
+    system_prompt="""You are a helpful, friendly AI assistant. You do not have access to any external tools, MCP servers, or skills. Answer questions using your training knowledge, be concise, and let the user know if a question is outside your knowledge.
+""",
+    system_prompt_codemode=None,
+)
+
 
 # ============================================================================
 # Agent Specs Registry
@@ -376,6 +405,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
     "github-agent-mcp": GITHUB_AGENT_MCP_AGENT_SPEC,
     "github-agent": GITHUB_AGENT_SPEC,
     "information-routing": INFORMATION_ROUTING_AGENT_SPEC,
+    "simple": SIMPLE_AGENT_SPEC,
 }
 
 

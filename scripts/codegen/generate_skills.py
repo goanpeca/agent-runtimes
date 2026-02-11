@@ -20,6 +20,13 @@ from typing import Any
 import yaml
 
 
+def _fmt_list(items: list[str]) -> str:
+    """Format a list of strings with double quotes for ruff compliance."""
+    if not items:
+        return "[]"
+    return "[" + ", ".join(f'"{item}"' for item in items) + "]"
+
+
 def load_skill_specs(specs_dir: Path) -> list[dict[str, Any]]:
     """Load all skill YAML specifications from a directory."""
     specs = []
@@ -52,6 +59,7 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
         "@dataclass",
         "class SkillSpec:",
         '    """Skill specification."""',
+        "",
         "    id: str",
         "    name: str",
         "    description: str",
@@ -81,10 +89,10 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
                 f'    name="{spec["name"]}",',
                 f'    description="{spec["description"]}",',
                 f'    module="{spec.get("module", "")}",',
-                f"    required_env_vars={spec.get('required_env_vars', [])},",
-                f"    optional_env_vars={spec.get('optional_env_vars', [])},",
-                f"    dependencies={spec.get('dependencies', [])},",
-                f"    tags={spec.get('tags', [])},",
+                f"    required_env_vars={_fmt_list(spec.get('required_env_vars', []))},",
+                f"    optional_env_vars={_fmt_list(spec.get('optional_env_vars', []))},",
+                f"    dependencies={_fmt_list(spec.get('dependencies', []))},",
+                f"    tags={_fmt_list(spec.get('tags', []))},",
                 f"    enabled={spec.get('enabled', True)},",
                 ")",
                 "",
@@ -195,11 +203,6 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
         skill_id = spec["id"]
         const_name = f"{skill_id.upper().replace('-', '_')}_SKILL_SPEC"
 
-        required_env = spec.get("required_env_vars", [])
-        env_comment = (
-            f"  // Requires: {', '.join(required_env)}" if required_env else ""
-        )
-
         # Format arrays for TypeScript
         required_env_vars_json = str(spec.get("required_env_vars", [])).replace(
             "'", '"'
@@ -222,7 +225,6 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
                 f"  dependencies: {dependencies_json},",
                 f"  tags: {tags_json},",
                 f"  enabled: {str(spec.get('enabled', True)).lower()},",
-                f"{env_comment}",
                 "};",
                 "",
             ]

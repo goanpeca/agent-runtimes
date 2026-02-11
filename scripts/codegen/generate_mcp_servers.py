@@ -46,6 +46,7 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
         '"""',
         "",
         "import os",
+        "import tempfile",
         "from typing import Dict",
         "",
         "from agent_runtimes.types import MCPServer",
@@ -64,9 +65,13 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
         # Format args properly
         args_list = spec.get("args", [])
         if args_list:
-            args_formatted = (
-                "[\n" + ",\n".join(f'        "{arg}"' for arg in args_list) + ",\n    ]"
-            )
+            arg_items = []
+            for arg in args_list:
+                if arg == "$TMPDIR":
+                    arg_items.append("        tempfile.gettempdir()")
+                else:
+                    arg_items.append(f'        "{arg}"')
+            args_formatted = "[\n" + ",\n".join(arg_items) + ",\n    ]"
         else:
             args_formatted = "[]"
 
@@ -85,7 +90,12 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
 
         # Format required env vars
         required_env = spec.get("required_env_vars", [])
-        required_env_formatted = str(required_env) if required_env else "[]"
+        if required_env:
+            required_env_formatted = (
+                "[" + ", ".join(f'"{v}"' for v in required_env) + "]"
+            )
+        else:
+            required_env_formatted = "[]"
 
         lines.extend(
             [
@@ -222,9 +232,12 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
 
         # Format required env vars
         required_env = spec.get("required_env_vars", [])
-        env_comment = (
-            f"  // Requires: {', '.join(required_env)}" if required_env else ""
-        )
+        if required_env:
+            required_env_formatted = (
+                "[" + ", ".join(f"'{v}'" for v in required_env) + "]"
+            )
+        else:
+            required_env_formatted = "[]"
 
         lines.extend(
             [
@@ -238,7 +251,7 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
                 f"  enabled: {str(spec.get('enabled', True)).lower()},",
                 "  isAvailable: false,",
                 "  tools: [],",
-                f"{env_comment}",
+                f"  requiredEnvVars: {required_env_formatted},",
                 "};",
                 "",
             ]
@@ -298,19 +311,21 @@ def update_init_file(specs: list[dict[str, Any]], init_file: Path) -> None:
         )
         return
 
-    # Generate new import lines
-    new_imports = ["from .catalog_mcp_servers import ("]
-    for const in sorted(server_constants):
-        new_imports.append(f"    {const},")
-    new_imports.extend(
-        [
-            "    MCP_SERVER_CATALOG,",
-            "    check_env_vars_available,",
-            "    get_catalog_server,",
-            "    list_catalog_servers,",
-            ")",
-        ]
+    # Generate new import lines - all names sorted alphabetically (ruff/isort order)
+    all_names = sorted(
+        server_constants
+        + [
+            "MCP_SERVER_CATALOG",
+            "check_env_vars_available",
+            "get_catalog_server",
+            "list_catalog_servers",
+        ],
+        key=str.casefold,
     )
+    new_imports = ["from .catalog_mcp_servers import ("]
+    for name in all_names:
+        new_imports.append(f"    {name},")
+    new_imports.append(")")
 
     # Replace the import section
     new_content = (

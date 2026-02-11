@@ -22,6 +22,8 @@ import {
   SLACK_MCP_SERVER,
   TAVILY_MCP_SERVER,
 } from './mcpServers';
+import { CRAWL_SKILL_SPEC, GITHUB_SKILL_SPEC, PDF_SKILL_SPEC } from './skills';
+import type { SkillSpec } from './skills';
 
 // ============================================================================
 // MCP Server Lookup
@@ -38,19 +40,40 @@ const MCP_SERVER_MAP: Record<string, any> = {
   tavily: TAVILY_MCP_SERVER,
 };
 
+/**
+ * Map skill IDs to SkillSpec objects, converting to AgentSkillSpec shape.
+ */
+const SKILL_MAP: Record<string, any> = {
+  crawl: CRAWL_SKILL_SPEC,
+  github: GITHUB_SKILL_SPEC,
+  pdf: PDF_SKILL_SPEC,
+};
+
+function toAgentSkillSpec(skill: SkillSpec) {
+  return {
+    id: skill.id,
+    name: skill.name,
+    description: skill.description,
+    version: '1.0.0',
+    tags: skill.tags,
+    enabled: skill.enabled,
+    requiredEnvVars: skill.requiredEnvVars,
+  };
+}
+
 // ============================================================================
 // Agent Specs
 // ============================================================================
 
 export const CRAWLER_MCP_AGENT_SPEC: AgentSpec = {
   id: 'crawler-mcp',
-  name: 'Crawler Agent',
+  name: 'Crawler Agent (MCP)',
   description: `Web crawling and research agent that searches the web and GitHub repositories for information.`,
   tags: ['web', 'search', 'research', 'crawler', 'github'],
-  enabled: true,
+  enabled: false,
   mcpServers: [MCP_SERVER_MAP['tavily'], MCP_SERVER_MAP['github']],
   skills: [],
-  environmentName: 'ai-agents',
+  environmentName: 'ai-agents-env',
   icon: 'globe',
   color: '#10B981',
   suggestions: [
@@ -87,10 +110,10 @@ export const CRAWLER_AGENT_SPEC: AgentSpec = {
   name: 'Crawler Agent',
   description: `Web crawling and research agent that searches the web and GitHub repositories for information.`,
   tags: ['web', 'search', 'research', 'crawler', 'github'],
-  enabled: true,
+  enabled: false,
   mcpServers: [MCP_SERVER_MAP['tavily']],
-  skills: [],
-  environmentName: 'ai-agents',
+  skills: [toAgentSkillSpec(SKILL_MAP['github'])],
+  environmentName: 'ai-agents-env',
   icon: 'globe',
   color: '#10B981',
   suggestions: [
@@ -128,9 +151,13 @@ export const DATA_ACQUISITION_AGENT_SPEC: AgentSpec = {
   description: `Acquires and manages data from various sources including Kaggle datasets and local filesystem operations.`,
   tags: ['data', 'acquisition', 'kaggle', 'filesystem'],
   enabled: true,
-  mcpServers: [MCP_SERVER_MAP['kaggle'], MCP_SERVER_MAP['filesystem']],
-  skills: [],
-  environmentName: 'ai-agents',
+  mcpServers: [
+    MCP_SERVER_MAP['kaggle'],
+    MCP_SERVER_MAP['filesystem'],
+    MCP_SERVER_MAP['tavily'],
+  ],
+  skills: [toAgentSkillSpec(SKILL_MAP['github'])],
+  environmentName: 'ai-agents-env',
   icon: 'database',
   color: '#3B82F6',
   suggestions: [
@@ -164,13 +191,13 @@ export const DATA_ACQUISITION_AGENT_SPEC: AgentSpec = {
 
 export const FINANCIAL_VIZ_AGENT_SPEC: AgentSpec = {
   id: 'financial-viz',
-  name: 'Financial Visualization Agent',
+  name: 'Financial Visualization Agent (Viz)',
   description: `Analyzes financial market data and creates visualizations and charts.`,
   tags: ['finance', 'stocks', 'visualization', 'charts'],
-  enabled: true,
+  enabled: false,
   mcpServers: [MCP_SERVER_MAP['alphavantage'], MCP_SERVER_MAP['chart']],
   skills: [],
-  environmentName: 'ai-agents',
+  environmentName: 'ai-agents-env',
   icon: 'trending-up',
   color: '#F59E0B',
   suggestions: [
@@ -207,10 +234,10 @@ export const FINANCIAL_AGENT_SPEC: AgentSpec = {
   name: 'Financial Visualization Agent',
   description: `Analyzes financial market data and creates visualizations and charts.`,
   tags: ['finance', 'stocks', 'visualization', 'charts'],
-  enabled: true,
+  enabled: false,
   mcpServers: [MCP_SERVER_MAP['alphavantage']],
   skills: [],
-  environmentName: 'ai-agents',
+  environmentName: 'ai-agents-env',
   icon: 'trending-up',
   color: '#F59E0B',
   suggestions: [
@@ -247,10 +274,10 @@ export const GITHUB_AGENT_MCP_AGENT_SPEC: AgentSpec = {
   name: 'GitHub Agent',
   description: `Manages GitHub repositories, issues, and pull requests with email notification capabilities.`,
   tags: ['github', 'git', 'code', 'email'],
-  enabled: true,
+  enabled: false,
   mcpServers: [MCP_SERVER_MAP['github'], MCP_SERVER_MAP['google-workspace']],
   skills: [],
-  environmentName: 'ai-agents',
+  environmentName: 'ai-agents-env',
   icon: 'git-branch',
   color: '#6366F1',
   suggestions: [
@@ -287,10 +314,10 @@ export const GITHUB_AGENT_SPEC: AgentSpec = {
   name: 'GitHub Agent',
   description: `Manages GitHub repositories, issues, and pull requests with email notification capabilities.`,
   tags: ['github', 'git', 'code', 'email'],
-  enabled: true,
+  enabled: false,
   mcpServers: [MCP_SERVER_MAP['google-workspace']],
-  skills: [],
-  environmentName: 'ai-agents',
+  skills: [toAgentSkillSpec(SKILL_MAP['github'])],
+  environmentName: 'ai-agents-env',
   icon: 'git-branch',
   color: '#6366F1',
   suggestions: [
@@ -327,10 +354,10 @@ export const INFORMATION_ROUTING_AGENT_SPEC: AgentSpec = {
   name: 'Information Routing Agent',
   description: `Routes information between Google Drive and Slack, managing document workflows and team communication.`,
   tags: ['workflow', 'communication', 'gdrive', 'slack'],
-  enabled: true,
+  enabled: false,
   mcpServers: [MCP_SERVER_MAP['google-workspace'], MCP_SERVER_MAP['slack']],
   skills: [],
-  environmentName: 'ai-agents',
+  environmentName: 'ai-agents-env',
   icon: 'share-2',
   color: '#EC4899',
   suggestions: [
@@ -362,6 +389,28 @@ export const INFORMATION_ROUTING_AGENT_SPEC: AgentSpec = {
 `,
 };
 
+export const SIMPLE_AGENT_SPEC: AgentSpec = {
+  id: 'simple',
+  name: 'A Simple Agent',
+  description: `A simple conversational agent. No tools, no MCP servers, no skills — just a helpful AI assistant you can chat with.`,
+  tags: ['simple', 'chat', 'assistant'],
+  enabled: true,
+  mcpServers: [],
+  skills: [],
+  environmentName: 'ai-agents-env',
+  icon: 'share-2',
+  color: '#6366F1',
+  suggestions: [
+    'Tell me a joke',
+    'Explain quantum computing in simple terms',
+    'Help me brainstorm ideas for a weekend project',
+    'Summarize the key points of a topic I describe',
+  ],
+  systemPrompt: `You are a helpful, friendly AI assistant. You do not have access to any external tools, MCP servers, or skills. Answer questions using your training knowledge, be concise, and let the user know if a question is outside your knowledge.
+`,
+  systemPromptCodemode: undefined,
+};
+
 // ============================================================================
 // Agent Specs Registry
 // ============================================================================
@@ -375,6 +424,7 @@ export const AGENT_SPECS: Record<string, AgentSpec> = {
   'github-agent-mcp': GITHUB_AGENT_MCP_AGENT_SPEC,
   'github-agent': GITHUB_AGENT_SPEC,
   'information-routing': INFORMATION_ROUTING_AGENT_SPEC,
+  simple: SIMPLE_AGENT_SPEC,
 };
 
 /**
@@ -389,4 +439,25 @@ export function getAgentSpecs(agentId: string): AgentSpec | undefined {
  */
 export function listAgentSpecs(): AgentSpec[] {
   return Object.values(AGENT_SPECS);
+}
+
+/**
+ * Collect all required environment variables for an agent spec.
+ *
+ * Iterates over the spec's MCP servers and skills and returns the
+ * deduplicated union of their `requiredEnvVars` arrays.
+ */
+export function getAgentSpecRequiredEnvVars(spec: AgentSpec): string[] {
+  const vars = new Set<string>();
+  for (const server of spec.mcpServers) {
+    for (const v of server.requiredEnvVars ?? []) {
+      vars.add(v);
+    }
+  }
+  for (const skill of spec.skills) {
+    for (const v of skill.requiredEnvVars ?? []) {
+      vars.add(v);
+    }
+  }
+  return Array.from(vars);
 }

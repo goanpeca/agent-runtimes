@@ -406,6 +406,14 @@ export interface ChatBaseProps {
   /** Show header */
   showHeader?: boolean;
 
+  /**
+   * Show token usage bar (input/output token counts from the backend).
+   * Rendered independently of showHeader, so usage is visible even without a title bar.
+   * Requires the protocol to have enableConfigQuery=true and an agentId.
+   * @default true
+   */
+  showTokenUsage?: boolean;
+
   /** Show loading indicator */
   showLoadingIndicator?: boolean;
 
@@ -429,6 +437,13 @@ export interface ChatBaseProps {
 
   /** Initial model ID to select (e.g., 'openai:gpt-4o-mini') */
   initialModel?: string;
+
+  /**
+   * Override the list of available models.
+   * When provided, this list replaces the models returned by the config endpoint.
+   * Use this to restrict the model selector to a specific subset of models.
+   */
+  availableModels?: ModelConfig[];
 
   /** MCP servers to enable (others will be disabled) */
   mcpServers?: McpServerSelection[];
@@ -753,6 +768,7 @@ function useConfigQuery(
     },
     queryKey: ['models', configEndpoint || 'jupyter'],
     enabled,
+    retry: 1,
   });
 }
 
@@ -800,7 +816,112 @@ function useSkillsQuery(
     queryKey: ['skills', baseEndpoint || 'jupyter'],
     enabled,
     staleTime: 5 * 60 * 1000, // 5 minutes
+    retry: 1,
   });
+}
+
+/**
+ * Response from the context-snapshot API.
+ * Contains cumulative token usage tracked by the agent server.
+ */
+interface ContextSnapshotData {
+  totalTokens: number;
+  contextWindow: number;
+  sumResponseInputTokens: number;
+  sumResponseOutputTokens: number;
+  systemPromptTokens: number;
+  userMessageTokens: number;
+  assistantMessageTokens: number;
+  toolTokens: number;
+  turnUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    requests: number;
+    toolCalls: number;
+    toolNames: string[];
+    durationSeconds: number;
+  } | null;
+  sessionUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    requests: number;
+    toolCalls: number;
+    turns: number;
+    durationSeconds: number;
+  } | null;
+  error?: string;
+}
+
+/**
+ * Format token count for compact display
+ */
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+  return tokens.toString();
+}
+
+/**
+ * Derive the API base URL from a configEndpoint.
+ * configEndpoint may look like:
+ *   "http://host:port/api/v1/config"     (from agentRuntimeConfig)
+ *   "http://host:port/api/v1/configure"   (from Chat component)
+ * We strip the trailing path segment to get "http://host:port/api/v1".
+ */
+function getApiBaseFromConfig(configEndpoint: string): string {
+  return configEndpoint.replace(/\/(config|configure)\/?$/, '');
+}
+
+/**
+ * Hook to poll agent context-snapshot from the backend.
+ * Returns cumulative token usage (input/output breakdown) tracked by the agent server.
+ * Uses the same endpoint as codeai: GET /api/v1/configure/agents/{agentId}/context-snapshot
+ */
+function useContextSnapshotQuery(
+  enabled: boolean,
+  configEndpoint?: string,
+  agentId?: string,
+  authToken?: string,
+) {
+  const queryClient = useContext(QueryClientContext);
+
+  if (!queryClient) {
+    return { data: undefined, isLoading: false, isError: false, error: null };
+  }
+
+  const snapshotUrl =
+    configEndpoint && agentId
+      ? `${getApiBaseFromConfig(configEndpoint)}/configure/agents/${encodeURIComponent(agentId)}/context-snapshot`
+      : undefined;
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const result = useQuery<ContextSnapshotData>({
+    queryKey: ['context-snapshot-header', agentId, snapshotUrl],
+    queryFn: async () => {
+      if (!snapshotUrl) {
+        throw new Error('No context-snapshot URL available');
+      }
+      const headers: HeadersInit = { 'Content-Type': 'application/json' };
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
+      const response = await fetch(snapshotUrl, { headers });
+      if (!response.ok) {
+        throw new Error(
+          `Context snapshot fetch failed: ${response.statusText}`,
+        );
+      }
+      return response.json();
+    },
+    enabled: enabled && !!snapshotUrl,
+    // Poll every 10 seconds, but stop polling once the query has errored (e.g. runtime terminated)
+    refetchInterval: query => (query.state.status === 'error' ? false : 10_000),
+    refetchOnMount: 'always',
+    staleTime: 0,
+    retry: 1,
+  });
+
+  return result;
 }
 
 /**
@@ -809,6 +930,7 @@ function useSkillsQuery(
 export function ChatBase({
   title,
   showHeader = false,
+  showTokenUsage = true,
   showLoadingIndicator = true,
   showErrors = true,
   showInput = true,
@@ -817,6 +939,7 @@ export function ChatBase({
   showSkillsMenu = false,
   codemodeEnabled = false,
   initialModel,
+  availableModels,
   mcpServers,
   initialSkills,
   className,
@@ -889,6 +1012,7 @@ export function ChatBase({
         <ChatBaseInner
           title={title}
           showHeader={showHeader}
+          showTokenUsage={showTokenUsage}
           showLoadingIndicator={showLoadingIndicator}
           showErrors={showErrors}
           showInput={showInput}
@@ -897,6 +1021,7 @@ export function ChatBase({
           showSkillsMenu={showSkillsMenu}
           codemodeEnabled={codemodeEnabled}
           initialModel={initialModel}
+          availableModels={availableModels}
           mcpServers={mcpServers}
           initialSkills={initialSkills}
           className={className}
@@ -948,6 +1073,7 @@ export function ChatBase({
     <ChatBaseInner
       title={title}
       showHeader={showHeader}
+      showTokenUsage={showTokenUsage}
       showLoadingIndicator={showLoadingIndicator}
       showErrors={showErrors}
       showInput={showInput}
@@ -956,6 +1082,7 @@ export function ChatBase({
       showSkillsMenu={showSkillsMenu}
       codemodeEnabled={codemodeEnabled}
       initialModel={initialModel}
+      availableModels={availableModels}
       mcpServers={mcpServers}
       initialSkills={initialSkills}
       className={className}
@@ -1007,6 +1134,7 @@ export function ChatBase({
 function ChatBaseInner({
   title,
   showHeader = false,
+  showTokenUsage = true,
   showLoadingIndicator = true,
   showErrors = true,
   showInput = true,
@@ -1015,6 +1143,7 @@ function ChatBaseInner({
   showSkillsMenu = false,
   codemodeEnabled = false,
   initialModel,
+  availableModels,
   mcpServers,
   initialSkills,
   className,
@@ -1104,6 +1233,16 @@ function ChatBaseInner({
     protocol?.configEndpoint,
     protocol?.authToken,
   );
+
+  // Context snapshot query — polls agent-level cumulative token usage (input/output breakdown)
+  // Gated by showTokenUsage (not showHeader), so usage is visible even without a title bar.
+  const contextSnapshotQuery = useContextSnapshotQuery(
+    Boolean(protocol?.enableConfigQuery) && showTokenUsage,
+    protocol?.configEndpoint,
+    protocol?.agentId,
+    protocol?.authToken,
+  );
+  const agentUsage = contextSnapshotQuery.data;
 
   // Refs
   const adapterRef = useRef<BaseProtocolAdapter | null>(null);
@@ -1198,42 +1337,42 @@ function ChatBaseInner({
 
   // Initialize model and tools when config is available
   useEffect(() => {
-    if (configQuery.data && !selectedModel) {
+    if ((configQuery.data || availableModels) && !selectedModel) {
+      // Use availableModels override if provided, otherwise use config models
+      const modelsList = availableModels || configQuery.data?.models || [];
       // Use initialModel if provided, otherwise select first available model
       if (initialModel) {
-        // Check if the initial model exists in the config
-        const modelExists = configQuery.data.models.some(
-          m => m.id === initialModel,
-        );
+        // Check if the initial model exists in the models list
+        const modelExists = modelsList.some(m => m.id === initialModel);
         if (modelExists) {
           setSelectedModel(initialModel);
         } else {
           // Fallback to first available model if initialModel not found
-          const firstAvailableModel = configQuery.data.models.find(
+          const firstAvailableModel = modelsList.find(
             m => m.isAvailable !== false,
           );
-          const firstModel = firstAvailableModel || configQuery.data.models[0];
+          const firstModel = firstAvailableModel || modelsList[0];
           if (firstModel) {
             setSelectedModel(firstModel.id);
           }
         }
       } else {
         // No initialModel provided, select first available model
-        const firstAvailableModel = configQuery.data.models.find(
+        const firstAvailableModel = modelsList.find(
           m => m.isAvailable !== false,
         );
-        const firstModel = firstAvailableModel || configQuery.data.models[0];
+        const firstModel = firstAvailableModel || modelsList[0];
         if (firstModel) {
           setSelectedModel(firstModel.id);
         }
       }
 
       const allToolIds =
-        configQuery.data.builtinTools?.map(tool => tool.id) || [];
+        configQuery.data?.builtinTools?.map(tool => tool.id) || [];
       setEnabledTools(allToolIds);
 
       // Initialize MCP server tools
-      if (configQuery.data.mcpServers) {
+      if (configQuery.data?.mcpServers) {
         const newEnabledMcpTools = new Map<string, Set<string>>();
         for (const server of configQuery.data.mcpServers) {
           if (server.isAvailable && server.enabled) {
@@ -1256,6 +1395,7 @@ function ChatBaseInner({
     configQuery.data,
     selectedModel,
     initialModel,
+    availableModels,
     mcpServers,
     isServerSelected,
   ]);
@@ -2234,6 +2374,84 @@ function ChatBaseInner({
     );
   };
 
+  // Render token usage bar between input and selectors
+  const renderTokenUsage = () => {
+    if (!showTokenUsage) return null;
+
+    // Show bar when we have any context data (totalTokens > 0 means agent is active)
+    const hasContext =
+      agentUsage && !agentUsage.error && agentUsage.totalTokens > 0;
+    const hasTurn =
+      agentUsage?.turnUsage &&
+      (agentUsage.turnUsage.inputTokens > 0 ||
+        agentUsage.turnUsage.outputTokens > 0);
+    const hasSession =
+      agentUsage?.sessionUsage &&
+      (agentUsage.sessionUsage.inputTokens > 0 ||
+        agentUsage.sessionUsage.outputTokens > 0);
+
+    if (!hasContext) return null;
+
+    return (
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'flex-start',
+          gap: 2,
+          py: 1,
+          px: padding,
+          bg: 'canvas.subtle',
+          flexWrap: 'nowrap',
+          overflow: 'hidden',
+          whiteSpace: 'nowrap',
+          minWidth: 0,
+        }}
+      >
+        {/* Context window usage */}
+        <Text sx={{ fontSize: 0, color: 'fg.muted', flexShrink: 0 }}>
+          <Text
+            as="span"
+            sx={{ fontWeight: 'semibold', color: 'fg.default', fontSize: 0 }}
+          >
+            {formatTokenCount(agentUsage!.totalTokens)}
+          </Text>
+          {' / '}
+          {formatTokenCount(agentUsage!.contextWindow)}
+          {' ctx'}
+        </Text>
+        {/* Session totals */}
+        {hasSession && (
+          <Text sx={{ fontSize: 0, color: 'fg.muted', flexShrink: 0 }}>
+            {'· '}
+            {formatTokenCount(agentUsage!.sessionUsage!.inputTokens)}
+            <Text as="span" sx={{ color: 'success.fg', fontSize: 0 }}>
+              {'▲'}
+            </Text>{' '}
+            {formatTokenCount(agentUsage!.sessionUsage!.outputTokens)}
+            <Text as="span" sx={{ color: 'attention.fg', fontSize: 0 }}>
+              {'▼'}
+            </Text>
+          </Text>
+        )}
+        {/* Last turn breakdown */}
+        {hasTurn && (
+          <Text sx={{ fontSize: 0, color: 'fg.muted', flexShrink: 0 }}>
+            {'· turn '}
+            {formatTokenCount(agentUsage!.turnUsage!.inputTokens)}
+            <Text as="span" sx={{ color: 'success.fg', fontSize: 0 }}>
+              {'▲'}
+            </Text>{' '}
+            {formatTokenCount(agentUsage!.turnUsage!.outputTokens)}
+            <Text as="span" sx={{ color: 'attention.fg', fontSize: 0 }}>
+              {'▼'}
+            </Text>
+          </Text>
+        )}
+      </Box>
+    );
+  };
+
   // Render empty state
   const renderEmptyState = () => {
     if (emptyState?.render) {
@@ -2606,7 +2824,9 @@ function ChatBaseInner({
                     maxWidth: '85%',
                     p: 2,
                     borderRadius: 2,
-                    backgroundColor: isUser ? 'accent.emphasis' : '#f6f8fa',
+                    backgroundColor: isUser
+                      ? 'accent.emphasis'
+                      : 'canvas.subtle',
                     color: isUser ? 'fg.onEmphasis' : 'fg.default',
                     // Streamdown code block styling
                     // Code block container
@@ -2622,10 +2842,10 @@ function ChatBaseInner({
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
-                      backgroundColor: '#e1e4e8',
+                      backgroundColor: 'canvas.subtle',
                       padding: '8px 12px',
                       fontSize: '12px',
-                      color: '#586069',
+                      color: 'fg.muted',
                     },
                     // Style the buttons in the header
                     '& [data-streamdown="code-block-header"] button': {
@@ -2633,16 +2853,16 @@ function ChatBaseInner({
                       border: 'none',
                       cursor: 'pointer',
                       padding: '4px',
-                      color: '#586069',
+                      color: 'fg.muted',
                       borderRadius: '4px',
                       '&:hover': {
-                        backgroundColor: 'rgba(0,0,0,0.1)',
-                        color: '#24292e',
+                        backgroundColor: 'neutral.muted',
+                        color: 'fg.default',
                       },
                     },
                     // Code block body
                     '& [data-streamdown="code-block-body"]': {
-                      backgroundColor: '#f6f8fa',
+                      backgroundColor: 'canvas.subtle',
                       padding: '12px',
                       margin: 0,
                       overflow: 'auto',
@@ -2831,7 +3051,7 @@ function ChatBaseInner({
   // Render protocol mode input
   const renderProtocolInput = () => {
     const availableTools = configQuery.data?.builtinTools || [];
-    const models = configQuery.data?.models || [];
+    const models = availableModels || configQuery.data?.models || [];
 
     return (
       <Box>
@@ -2883,6 +3103,9 @@ function ChatBaseInner({
             )}
           </Box>
         </Box>
+
+        {/* Token usage bar - between input and selectors */}
+        {renderTokenUsage()}
 
         {/* Model, Skills, and Tools Footer - Below Input */}
         {(showModelSelector || showToolsMenu || showSkillsMenu) &&
