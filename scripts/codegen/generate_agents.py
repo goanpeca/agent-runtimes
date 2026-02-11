@@ -9,6 +9,7 @@ Generates Python and TypeScript code from YAML agent specifications.
 """
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -88,7 +89,7 @@ from agent_runtimes.types import AgentSpec
 
     # Sort folders: empty string (root) first, then alphabetically
     sorted_folders = sorted(
-        specs_by_folder.keys(), key=lambda x: ("" if x == "" else f"z{x}")
+        specs_by_folder.keys(), key=lambda x: "" if x == "" else f"z{x}"
     )
 
     for folder in sorted_folders:
@@ -105,13 +106,8 @@ from agent_runtimes.types import AgentSpec
             full_agent_id = f"{folder}/{agent_id}" if folder else agent_id
             # Create constant name: e.g., "data-acquisition" -> "DATA_ACQUISITION_AGENT_SPEC"
             # But if id already ends with "-agent", don't duplicate: "github-agent" -> "GITHUB_AGENT_SPEC"
-            # Prefix with folder for uniqueness: "datalayer-ai/simple" -> "DATALAYER_AI_SIMPLE_AGENT_SPEC"
-            if folder:
-                base_name = (
-                    f"{folder}_{agent_id}".upper().replace("-", "_").replace("/", "_")
-                )
-            else:
-                base_name = agent_id.upper().replace("-", "_")
+            # NO folder prefix for Python constants
+            base_name = agent_id.upper().replace("-", "_")
 
             if agent_id.endswith("-agent"):
                 const_name = base_name + "_SPEC"
@@ -258,21 +254,36 @@ def generate_typescript_code(
     skill_ids = [os.path.basename(f).replace(".yaml", "") for f in skill_files]
     skill_ids.sort()
 
-    # Generate import names and map entries dynamically
+    # Determine which MCP servers and skills are actually used in these specs
+    used_mcp_servers = set()
+    used_skills = set()
+    for _, spec in specs:
+        for server in spec.get("mcp_servers", []):
+            used_mcp_servers.add(server)
+        for skill in spec.get("skills", []):
+            used_skills.add(skill)
+
+    # Only import what's actually used
     mcp_imports = []
     mcp_map_entries = []
     for server_id in mcp_server_ids:
-        const_name = server_id.upper().replace("-", "_") + "_MCP_SERVER"
-        mcp_imports.append(const_name)
-        mcp_map_entries.append(f"  '{server_id}': {const_name},")
+        if server_id in used_mcp_servers:
+            const_name = server_id.upper().replace("-", "_") + "_MCP_SERVER"
+            mcp_imports.append(const_name)
+            mcp_map_entries.append(f"  '{server_id}': {const_name},")
 
     # Generate skill import names and map entries
     skill_imports = []
     skill_map_entries = []
     for sid in skill_ids:
-        const_name = sid.upper().replace("-", "_") + "_SKILL_SPEC"
-        skill_imports.append(const_name)
-        skill_map_entries.append(f"  '{sid}': {const_name},")
+        if sid in used_skills:
+            const_name = sid.upper().replace("-", "_") + "_SKILL_SPEC"
+            skill_imports.append(const_name)
+            skill_map_entries.append(f"  '{sid}': {const_name},")
+
+    # Determine if we need any helper code
+    has_mcp = len(mcp_imports) > 0
+    has_skills = len(skill_imports) > 0
 
     # Header
     code = """/*
@@ -288,34 +299,45 @@ def generate_typescript_code(
  * Generated from YAML specifications in specs/agents/
  */
 
-import type { AgentSpec } from '../types';
-import {
+import type { AgentSpec } from '../../../types';
 """
-    code += "  " + ",\n  ".join(mcp_imports) + ",\n"
-    code += """} from './mcpServers';
-import {
-"""
-    code += "  " + ",\n  ".join(skill_imports) + ",\n"
-    code += """} from './skills';
-import type { SkillSpec } from './skills';
 
+    # Only add MCP server imports if needed
+    if has_mcp:
+        code += "import {\n"
+        code += "  " + ",\n  ".join(mcp_imports) + ",\n"
+        code += "} from '../../mcpServers';\n"
+
+    # Only add skill imports if needed
+    if has_skills:
+        code += "import {\n"
+        code += "  " + ",\n  ".join(skill_imports) + ",\n"
+        code += "} from '../../skills';\n"
+        code += "import type { SkillSpec } from '../../skills';\n"
+
+    # Only add MCP server lookup if used
+    if has_mcp:
+        code += """
 // ============================================================================
 // MCP Server Lookup
 // ============================================================================
 
 const MCP_SERVER_MAP: Record<string, any> = {
 """
-    code += "\n".join(mcp_map_entries) + "\n"
-    code += """};
+        code += "\n".join(mcp_map_entries) + "\n"
+        code += "};\n"
 
+    # Only add skill lookup if used
+    if has_skills:
+        code += """
 /**
  * Map skill IDs to SkillSpec objects, converting to AgentSkillSpec shape.
  */
 const SKILL_MAP: Record<string, any> = {
 """
-    code += "\n".join(skill_map_entries) + "\n"
-    code += """};
-
+        code += "\n".join(skill_map_entries) + "\n"
+        code += "};\n"
+        code += """
 function toAgentSkillSpec(skill: SkillSpec) {
   return {
     id: skill.id,
@@ -327,7 +349,9 @@ function toAgentSkillSpec(skill: SkillSpec) {
     requiredEnvVars: skill.requiredEnvVars,
   };
 }
+"""
 
+    code += """
 // ============================================================================
 // Agent Specs
 // ============================================================================
@@ -343,7 +367,7 @@ function toAgentSkillSpec(skill: SkillSpec) {
 
     # Sort folders: empty string (root) first, then alphabetically
     sorted_folders = sorted(
-        specs_by_folder.keys(), key=lambda x: ("" if x == "" else f"z{x}")
+        specs_by_folder.keys(), key=lambda x: "" if x == "" else f"z{x}"
     )
 
     # Generate agent spec constants organized by folder
@@ -363,13 +387,8 @@ function toAgentSkillSpec(skill: SkillSpec) {
             full_agent_id = f"{folder}/{agent_id}" if folder else agent_id
             # Create constant name: e.g., "data-acquisition" -> "DATA_ACQUISITION_AGENT_SPEC"
             # But if id already ends with "-agent", don't duplicate: "github-agent" -> "GITHUB_AGENT_SPEC"
-            # Prefix with folder for uniqueness: "datalayer-ai/simple" -> "DATALAYER_AI_SIMPLE_AGENT_SPEC"
-            if folder:
-                base_name = (
-                    f"{folder}_{agent_id}".upper().replace("-", "_").replace("/", "_")
-                )
-            else:
-                base_name = agent_id.upper().replace("-", "_")
+            # NO folder prefix for TypeScript constants
+            base_name = agent_id.upper().replace("-", "_")
 
             if agent_id.endswith("-agent"):
                 const_name = base_name + "_SPEC"
@@ -379,13 +398,16 @@ function toAgentSkillSpec(skill: SkillSpec) {
 
             # Get MCP servers
             mcp_server_ids = spec.get("mcp_servers", [])
-            mcp_servers_str = ", ".join(
-                f"MCP_SERVER_MAP['{sid}']" for sid in mcp_server_ids
-            )
+            if has_mcp and mcp_server_ids:
+                mcp_servers_str = ", ".join(
+                    f"MCP_SERVER_MAP['{sid}']" for sid in mcp_server_ids
+                )
+            else:
+                mcp_servers_str = ""
 
             # Get skills - resolve to AgentSkillSpec via toAgentSkillSpec
             skill_ids_list = spec.get("skills", [])
-            if skill_ids_list:
+            if has_skills and skill_ids_list:
                 skills_str = ", ".join(
                     f"toAgentSkillSpec(SKILL_MAP['{sid}'])" for sid in skill_ids_list
                 )
@@ -554,6 +576,216 @@ def update_init_file(
         f.write(new_content)
 
 
+def generate_subfolder_structure(specs: List[tuple[str, Dict[str, Any]]], args):
+    """Generate separate agent files per subfolder."""
+    from collections import defaultdict
+
+    # Organize specs by folder
+    specs_by_folder: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for folder, spec in specs:
+        specs_by_folder[folder].append(spec)
+
+    # Get MCP and skills specs directories
+    mcp_specs_dir = args.specs_dir.parent / "mcp-servers"
+    skills_specs_dir = args.specs_dir.parent / "skills"
+
+    # Determine base directories
+    python_base = args.python_output.parent / "agents"
+    typescript_base = args.typescript_output.parent / "agents"
+
+    print(f"Generating subfolder structure in {python_base} and {typescript_base}...")
+
+    # Generate files for each folder
+    all_python_imports = []
+    all_typescript_imports = []
+
+    for folder, folder_specs in sorted(specs_by_folder.items()):
+        if not folder:  # Skip root level for now
+            continue
+
+        print(f"  Generating agents for subfolder: {folder}")
+
+        # Convert folder name to valid Python module name (replace hyphens with underscores)
+        folder_python_name = folder.replace("-", "_")
+
+        # Create Python subfolder file
+        python_folder_dir = python_base / folder_python_name
+        python_folder_dir.mkdir(parents=True, exist_ok=True)
+        python_file = python_folder_dir / "agents.py"
+
+        # Generate Python code for this folder
+        python_code = generate_python_code([(folder, spec) for spec in folder_specs])
+        with open(python_file, "w") as f:
+            f.write(python_code)
+
+        # Create __init__.py for Python subfolder
+        python_init = python_folder_dir / "__init__.py"
+        with open(python_init, "w") as f:
+            f.write(f"""# Copyright (c) 2025-2026 Datalayer, Inc.
+# Distributed under the terms of the Modified BSD License.
+
+from .agents import *
+
+__all__ = ["AGENT_SPECS", "get_agent_spec", "list_agent_specs"]
+""")
+
+        # Collect imports for main index
+        all_python_imports.append(
+            f"from .{folder_python_name} import AGENT_SPECS as {folder_python_name.upper()}_AGENTS"
+        )
+
+        # Create TypeScript subfolder file
+        typescript_folder_dir = typescript_base / folder
+        typescript_folder_dir.mkdir(parents=True, exist_ok=True)
+        typescript_file = typescript_folder_dir / "agents.ts"
+
+        # Generate TypeScript code for this folder
+        typescript_code = generate_typescript_code(
+            [(folder, spec) for spec in folder_specs],
+            str(mcp_specs_dir),
+            str(skills_specs_dir),
+        )
+        with open(typescript_file, "w") as f:
+            f.write(typescript_code)
+
+        # Create index.ts for TypeScript subfolder
+        typescript_index = typescript_folder_dir / "index.ts"
+        with open(typescript_index, "w") as f:
+            f.write(f"""/*
+ * Copyright (c) 2025-2026 Datalayer, Inc.
+ * Distributed under the terms of the Modified BSD License.
+ */
+
+export * from './agents';
+""")
+
+        # Collect imports for main index
+        all_typescript_imports.append(f"export * from './{folder}';")
+
+    # Create main Python index file
+    python_index = python_base / "__init__.py"
+    python_index_content = """# Copyright (c) 2025-2026 Datalayer, Inc.
+# Distributed under the terms of the Modified BSD License.
+
+\"\"\"
+Agent Library - Subfolder Organization.
+
+THIS FILE IS AUTO-GENERATED. DO NOT EDIT MANUALLY.
+\"\"\"
+
+from typing import Dict
+from agent_runtimes.types import AgentSpec
+
+"""
+
+    # Add imports
+    for imp in all_python_imports:
+        python_index_content += f"{imp}\n"
+
+    # Merge all agent specs
+    python_index_content += """
+# Merge all agent specs from subfolders
+AGENT_SPECS: Dict[str, AgentSpec] = {}
+"""
+
+    for folder in sorted(specs_by_folder.keys()):
+        if folder:
+            folder_python_name = folder.replace("-", "_")
+            python_index_content += (
+                f"AGENT_SPECS.update({folder_python_name.upper()}_AGENTS)\n"
+            )
+
+    python_index_content += """
+
+def get_agent_spec(agent_id: str) -> AgentSpec | None:
+    \"\"\"Get an agent specification by ID.\"\"\"
+    return AGENT_SPECS.get(agent_id)
+
+
+def list_agent_specs() -> list[AgentSpec]:
+    \"\"\"List all available agent specifications.\"\"\"
+    return list(AGENT_SPECS.values())
+
+__all__ = ["AGENT_SPECS", "get_agent_spec", "list_agent_specs"]
+"""
+
+    with open(python_index, "w") as f:
+        f.write(python_index_content)
+
+    # Create main TypeScript index file
+    typescript_index = typescript_base / "index.ts"
+    typescript_index_content = """/*
+ * Copyright (c) 2025-2026 Datalayer, Inc.
+ * Distributed under the terms of the Modified BSD License.
+ */
+
+/**
+ * Agent Library - Subfolder Organization.
+ *
+ * THIS FILE IS AUTO-GENERATED. DO NOT EDIT MANUALLY.
+ */
+
+import type { AgentSpec } from '../../types';
+
+"""
+
+    # Import AGENT_SPECS from each subfolder
+    for folder in sorted(specs_by_folder.keys()):
+        if folder:
+            folder_const = folder.replace("-", "_").upper()
+            typescript_index_content += f"import {{ AGENT_SPECS as {folder_const}_AGENTS }} from './{folder}';\n"
+
+    typescript_index_content += """
+// Merge all agent specs from subfolders
+export const AGENT_SPECS: Record<string, AgentSpec> = {
+"""
+
+    for folder in sorted(specs_by_folder.keys()):
+        if folder:
+            folder_const = folder.replace("-", "_").upper()
+            typescript_index_content += f"  ...{folder_const}_AGENTS,\n"
+
+    typescript_index_content += """};
+
+/**
+ * Get an agent specification by ID.
+ */
+export function getAgentSpecs(agentId: string): AgentSpec | undefined {
+  return AGENT_SPECS[agentId];
+}
+
+/**
+ * List all available agent specifications.
+ */
+export function listAgentSpecs(): AgentSpec[] {
+  return Object.values(AGENT_SPECS);
+}
+
+/**
+ * Collect all required environment variables for an agent spec.
+ */
+export function getAgentSpecRequiredEnvVars(spec: AgentSpec): string[] {
+  const vars = new Set<string>();
+  for (const server of spec.mcpServers) {
+    for (const v of server.requiredEnvVars ?? []) {
+      vars.add(v);
+    }
+  }
+  for (const skill of spec.skills) {
+    for (const v of skill.requiredEnvVars ?? []) {
+      vars.add(v);
+    }
+  }
+  return Array.from(vars);
+}
+"""
+
+    with open(typescript_index, "w") as f:
+        f.write(typescript_index_content)
+
+    print(f"✓ Generated {len(specs_by_folder)} subfolder(s)")
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -569,13 +801,18 @@ def main():
         "--python-output",
         type=Path,
         default=Path("agent_runtimes/config/agents.py"),
-        help="Output path for generated Python code",
+        help="Output path for generated Python code (if using --subfolder-structure, this will be the parent directory)",
     )
     parser.add_argument(
         "--typescript-output",
         type=Path,
         default=Path("src/config/agents.ts"),
-        help="Output path for generated TypeScript code",
+        help="Output path for generated TypeScript code (if using --subfolder-structure, this will be the parent directory)",
+    )
+    parser.add_argument(
+        "--subfolder-structure",
+        action="store_true",
+        help="Generate separate files per subfolder instead of one combined file",
     )
 
     args = parser.parse_args()
@@ -590,30 +827,34 @@ def main():
     specs = load_yaml_specs(args.specs_dir)
     print(f"Loaded {len(specs)} agent specification(s)")
 
-    # Generate Python code
-    print(f"Generating Python code to {args.python_output}...")
-    python_code = generate_python_code(specs)
-    args.python_output.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.python_output, "w") as f:
-        f.write(python_code)
+    if args.subfolder_structure:
+        # Generate separate files per subfolder
+        generate_subfolder_structure(specs, args)
+    else:
+        # Generate Python code (single file)
+        print(f"Generating Python code to {args.python_output}...")
+        python_code = generate_python_code(specs)
+        args.python_output.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.python_output, "w") as f:
+            f.write(python_code)
 
-    # Generate TypeScript code
-    print(f"Generating TypeScript code to {args.typescript_output}...")
-    # Get MCP and skills specs directories (siblings to agents directory)
-    mcp_specs_dir = args.specs_dir.parent / "mcp-servers"
-    skills_specs_dir = args.specs_dir.parent / "skills"
-    typescript_code = generate_typescript_code(
-        specs, str(mcp_specs_dir), str(skills_specs_dir)
-    )
-    args.typescript_output.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.typescript_output, "w") as f:
-        f.write(typescript_code)
+        # Generate TypeScript code (single file)
+        print(f"Generating TypeScript code to {args.typescript_output}...")
+        # Get MCP and skills specs directories (siblings to agents directory)
+        mcp_specs_dir = args.specs_dir.parent / "mcp-servers"
+        skills_specs_dir = args.specs_dir.parent / "skills"
+        typescript_code = generate_typescript_code(
+            specs, str(mcp_specs_dir), str(skills_specs_dir)
+        )
+        args.typescript_output.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.typescript_output, "w") as f:
+            f.write(typescript_code)
 
-    # Update __init__.py with new agent spec constants
-    init_file_path = args.python_output.parent / "__init__.py"
-    if init_file_path.exists():
-        print(f"Updating {init_file_path}...")
-        update_init_file(specs, init_file_path)
+        # Update __init__.py with new agent spec constants
+        init_file_path = args.python_output.parent / "__init__.py"
+        if init_file_path.exists():
+            print(f"Updating {init_file_path}...")
+            update_init_file(specs, init_file_path)
 
     print("✅ Code generation complete!")
 
