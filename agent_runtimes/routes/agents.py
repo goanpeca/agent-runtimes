@@ -32,6 +32,7 @@ from ..services import (
     create_shared_sandbox,
     create_skills_toolset,
     initialize_codemode_toolset,
+    wire_skills_into_codemode,
 )
 from ..transports import AGUITransport, MCPUITransport, VercelAITransport
 from ..types import AgentSpec
@@ -588,21 +589,21 @@ async def create_agent(
 
                 try:
                     generated_root = Path(codemode_toolset.config.generated_path)
-                    servers_dir = generated_root / "servers"
-                    if servers_dir.exists():
+                    mcp_dir = generated_root / "mcp"
+                    if mcp_dir.exists():
                         server_modules = sorted(
                             p.name
-                            for p in servers_dir.iterdir()
+                            for p in mcp_dir.iterdir()
                             if p.is_dir() and not p.name.startswith("__")
                         )
                         logger.info(
-                            "Codemode bindings generated for servers: %s",
+                            "Codemode bindings generated for MCP servers: %s",
                             server_modules or "(none)",
                         )
                     else:
                         logger.warning(
-                            "Codemode generated servers directory not found: %s",
-                            servers_dir,
+                            "Codemode generated MCP directory not found: %s",
+                            mcp_dir,
                         )
                 except Exception as exc:
                     logger.warning(
@@ -612,6 +613,27 @@ async def create_agent(
                 non_mcp_toolsets.append(codemode_toolset)
                 logger.info(
                     f"Added and initialized CodemodeToolset for agent {agent_id}"
+                )
+
+        # Wire skill bindings into codemode so execute_code can import
+        # from generated.skills and compose skills programmatically
+        skills_prompt_section = ""
+        if request.enable_codemode and skills_enabled:
+            _skills_ts = next(
+                (
+                    t
+                    for t in non_mcp_toolsets
+                    if type(t).__name__ == "AgentSkillsToolset"
+                ),
+                None,
+            )
+            _codemode_ts = next(
+                (t for t in non_mcp_toolsets if type(t).__name__ == "CodemodeToolset"),
+                None,
+            )
+            if _skills_ts and _codemode_ts:
+                skills_prompt_section = wire_skills_into_codemode(
+                    _codemode_ts, _skills_ts
                 )
 
         logger.info(
@@ -625,6 +647,10 @@ async def create_agent(
             final_system_prompt = (
                 request.system_prompt + "\n\n" + request.system_prompt_codemode_addons
             )
+        # Append dynamic skills section so the LLM has visibility into
+        # installed skills, their scripts, parameters, and usage.
+        if skills_prompt_section:
+            final_system_prompt = final_system_prompt + "\n\n" + skills_prompt_section
 
         # Create the agent based on the library
         if request.agent_library == "pydantic-ai":
@@ -680,7 +706,29 @@ async def create_agent(
                         temp_request, http_request, sandbox=fresh_sandbox
                     )
 
-                codemode_builder = rebuild_codemode
+                # Wrap to register a post-init callback for skill re-wiring
+                _original_rebuild = rebuild_codemode
+
+                def rebuild_codemode_with_skills(
+                    new_servers: list[str | dict[str, str]],
+                ) -> Any:
+                    new_ts = _original_rebuild(new_servers)
+                    if new_ts is not None and skills_enabled:
+                        _sk = next(
+                            (
+                                t
+                                for t in non_mcp_toolsets
+                                if type(t).__name__ == "AgentSkillsToolset"
+                            ),
+                            None,
+                        )
+                        if _sk is not None:
+                            new_ts.add_post_init_callback(
+                                lambda ts, st=_sk: wire_skills_into_codemode(ts, st)
+                            )
+                    return new_ts
+
+                codemode_builder = rebuild_codemode_with_skills
 
             agent = PydanticAIAdapter(
                 agent=pydantic_agent,
