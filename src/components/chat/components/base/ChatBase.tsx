@@ -52,8 +52,13 @@ import {
   BriefcaseIcon,
   CircleIcon,
   SquareFillIcon,
+  CommentDiscussionIcon,
+  DeviceMobileIcon,
+  SidebarExpandIcon,
+  InfoIcon,
 } from '@primer/octicons-react';
 import { AiAgentIcon } from '@datalayer/icons-react';
+import ReactECharts from 'echarts-for-react';
 import {
   useQuery,
   QueryClient,
@@ -86,8 +91,15 @@ import {
 } from '../../protocols';
 import type { FrontendToolDefinition } from '../../types/tool';
 import { ToolCallDisplay } from '../display/ToolCallDisplay';
-import type { BuiltinTool as BuiltinToolType } from '../../../../types';
-import type { MCPServerConfig as MCPServerConfigType } from '../../../AgentConfiguration';
+import type { BuiltinTool as BuiltinToolType } from '../../../../types/Types';
+
+/**
+ * View mode for the chat component.
+ * - 'floating': Full-height floating panel (pinned to the right edge with offset)
+ * - 'floating-small': Standard floating popup
+ * - 'sidebar': Docked sidebar panel
+ */
+export type ChatViewMode = 'floating' | 'floating-small' | 'sidebar';
 
 // Singleton QueryClient for ChatBase instances without external QueryClientProvider
 const internalQueryClient = new QueryClient({
@@ -245,6 +257,82 @@ function getMessageText(message: ChatMessage): string {
 }
 
 /**
+ * Convert history messages to display items.
+ *
+ * History returns:
+ * - Assistant messages with `toolCalls` array (tool invocations)
+ * - Tool messages (role='tool') with content (tool results)
+ *
+ * For display, we need to:
+ * 1. Keep user/assistant text messages as ChatMessage
+ * 2. Convert each toolCall from assistant messages into a ToolCallMessage
+ * 3. Match tool result messages (role='tool') to their ToolCallMessage and update result
+ * 4. Filter out raw tool messages (role='tool') from display — they're merged into ToolCallMessage
+ */
+function convertHistoryToDisplayItems(messages: ChatMessage[]): DisplayItem[] {
+  const displayItems: DisplayItem[] = [];
+  const toolCallMap = new Map<string, ToolCallMessage>();
+
+  // First pass: collect all tool calls and build the initial display list
+  for (const msg of messages) {
+    if (msg.role === 'tool') {
+      // Tool result messages — will be merged later
+      const toolCallId = msg.metadata?.toolCallId as string | undefined;
+      if (toolCallId && toolCallMap.has(toolCallId)) {
+        // Update the existing tool call with the result
+        const toolCall = toolCallMap.get(toolCallId)!;
+        toolCall.result = msg.content;
+        toolCall.status = 'complete';
+      }
+      // Don't add tool messages to display — they're represented by ToolCallMessage
+      continue;
+    }
+
+    if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
+      // Assistant message with tool calls
+      // First add any text content as a regular message
+      const textContent =
+        typeof msg.content === 'string' ? msg.content.trim() : '';
+      if (textContent) {
+        displayItems.push({
+          ...msg,
+          toolCalls: undefined, // Remove toolCalls from the text message
+        });
+      }
+
+      // Then add each tool call as a ToolCallMessage
+      // Map from message.ts ToolCallStatus to ChatBase ToolCallStatus
+      for (const tc of msg.toolCalls) {
+        let status: ToolCallStatus = 'complete';
+        if (tc.status === 'pending' || tc.status === 'awaiting-approval') {
+          status = 'inProgress';
+        } else if (tc.status === 'executing') {
+          status = 'executing';
+        } else if (tc.status === 'failed') {
+          status = 'error';
+        }
+        const toolCallMsg: ToolCallMessage = {
+          id: `tc-${tc.toolCallId}`,
+          type: 'tool-call',
+          toolCallId: tc.toolCallId,
+          toolName: tc.toolName,
+          args: tc.args || {},
+          status,
+          result: tc.result,
+        };
+        toolCallMap.set(tc.toolCallId, toolCallMsg);
+        displayItems.push(toolCallMsg);
+      }
+    } else {
+      // Regular user/assistant/system message
+      displayItems.push(msg);
+    }
+  }
+
+  return displayItems;
+}
+
+/**
  * Avatar configuration
  */
 export interface AvatarConfig {
@@ -349,16 +437,28 @@ export interface MCPServerTool {
 /**
  * MCP Server configuration from backend
  */
-/**
- * MCP Server configuration (re-exported from AgentConfiguration)
- */
-export type MCPServerConfig = MCPServerConfigType;
+export interface MCPServerConfig {
+  id: string;
+  name: string;
+  description?: string;
+  url?: string;
+  enabled: boolean;
+  tools: MCPServerTool[];
+  command?: string;
+  args?: string[];
+  requiredEnvVars?: string[];
+  isAvailable?: boolean;
+  transport?: string;
+  isConfig?: boolean;
+  isRunning?: boolean;
+}
 
 /**
  * Remote configuration from server
  */
 export interface RemoteConfig {
   models: ModelConfig[];
+  defaultModel?: string;
   builtinTools: BuiltinTool[];
   mcpServers?: MCPServerConfig[];
 }
@@ -462,6 +562,18 @@ export interface ChatBaseProps {
   /** Header actions */
   headerActions?: React.ReactNode;
 
+  /**
+   * Current chat view mode.
+   * When provided, a segmented view-mode toggle is rendered in the header
+   * with icons for each mode: floating (popup), floating-small (compact), sidebar (docked).
+   */
+  chatViewMode?: ChatViewMode;
+
+  /**
+   * Callback when the user clicks a different view mode in the header toggle.
+   */
+  onChatViewModeChange?: (mode: ChatViewMode) => void;
+
   // ============ Mode Selection ============
 
   /**
@@ -534,6 +646,16 @@ export interface ChatBaseProps {
 
   /** Custom footer content (rendered above input) */
   footerContent?: ReactNode;
+
+  /**
+   * Show the information icon in the header.
+   * When clicked, fires onInformationClick.
+   * @default false
+   */
+  showInformation?: boolean;
+
+  /** Callback when the information icon is clicked */
+  onInformationClick?: () => void;
 
   /** Custom header content (rendered below title row) */
   headerContent?: ReactNode;
@@ -665,7 +787,7 @@ export interface ChatBaseProps {
    * Endpoint URL for fetching conversation history.
    * When runtimeId is provided, this endpoint is called to fetch
    * the conversation history on mount.
-   * If not provided, defaults to `{protocol.endpoint}/history`.
+   * If not provided, defaults to `{protocol.endpoint}/api/v1/history`.
    */
   historyEndpoint?: string;
 
@@ -826,6 +948,17 @@ function useSkillsQuery(
  * Response from the context-snapshot API.
  * Contains cumulative token usage tracked by the agent server.
  */
+interface DistributionChild {
+  name: string;
+  value: number;
+}
+
+interface Distribution {
+  name: string;
+  value: number;
+  children: DistributionChild[];
+}
+
 interface ContextSnapshotData {
   totalTokens: number;
   contextWindow: number;
@@ -835,6 +968,13 @@ interface ContextSnapshotData {
   userMessageTokens: number;
   assistantMessageTokens: number;
   toolTokens: number;
+  toolCallTokens: number;
+  toolReturnTokens: number;
+  historyToolCallTokens: number;
+  historyToolReturnTokens: number;
+  currentToolCallTokens: number;
+  currentToolReturnTokens: number;
+  distribution?: Distribution;
   turnUsage?: {
     inputTokens: number;
     outputTokens: number;
@@ -1009,6 +1149,8 @@ export function ChatBase({
   className,
   loadingState,
   headerActions,
+  chatViewMode,
+  onChatViewModeChange,
   // Mode selection
   useStore: useStoreMode = true,
   protocol: protocolProp,
@@ -1024,6 +1166,8 @@ export function ChatBase({
   emptyState,
   renderToolResult,
   footerContent,
+  showInformation = false,
+  onInformationClick,
   headerContent,
   children,
   borderRadius,
@@ -1091,6 +1235,8 @@ export function ChatBase({
           className={className}
           loadingState={loadingState}
           headerActions={headerActions}
+          chatViewMode={chatViewMode}
+          onChatViewModeChange={onChatViewModeChange}
           useStore={effectiveUseStoreMode}
           protocol={protocol}
           onSendMessage={onSendMessage}
@@ -1103,6 +1249,8 @@ export function ChatBase({
           emptyState={emptyState}
           renderToolResult={renderToolResult}
           footerContent={footerContent}
+          showInformation={showInformation}
+          onInformationClick={onInformationClick}
           headerContent={headerContent}
           children={children}
           borderRadius={borderRadius}
@@ -1152,6 +1300,8 @@ export function ChatBase({
       className={className}
       loadingState={loadingState}
       headerActions={headerActions}
+      chatViewMode={chatViewMode}
+      onChatViewModeChange={onChatViewModeChange}
       useStore={effectiveUseStoreMode}
       protocol={protocol}
       onSendMessage={onSendMessage}
@@ -1164,6 +1314,8 @@ export function ChatBase({
       emptyState={emptyState}
       renderToolResult={renderToolResult}
       footerContent={footerContent}
+      showInformation={showInformation}
+      onInformationClick={onInformationClick}
       headerContent={headerContent}
       children={children}
       borderRadius={borderRadius}
@@ -1213,6 +1365,8 @@ function ChatBaseInner({
   className,
   loadingState,
   headerActions,
+  chatViewMode,
+  onChatViewModeChange,
   // Mode selection
   useStore: useStoreMode = true,
   protocol,
@@ -1227,6 +1381,8 @@ function ChatBaseInner({
   emptyState,
   renderToolResult,
   footerContent,
+  showInformation = false,
+  onInformationClick,
   headerContent,
   children,
   borderRadius,
@@ -1326,6 +1482,10 @@ function ChatBaseInner({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // State for context pie chart overlay
+  const [contextOverlayOpen, setContextOverlayOpen] = useState(false);
+  const contextAnchorRef = useRef<HTMLDivElement>(null);
+  const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Use a ref for connectedIdentities to avoid infinite loops in useCallback
   // (the array reference changes on every render even if contents are the same)
   const connectedIdentitiesRef = useRef(connectedIdentities);
@@ -1413,14 +1573,15 @@ function ChatBaseInner({
     if ((configQuery.data || availableModels) && !selectedModel) {
       // Use availableModels override if provided, otherwise use config models
       const modelsList = availableModels || configQuery.data?.models || [];
-      // Use initialModel if provided, otherwise select first available model
-      if (initialModel) {
-        // Check if the initial model exists in the models list
-        const modelExists = modelsList.some(m => m.id === initialModel);
+      // Priority: initialModel prop > defaultModel from config > first available model
+      const preferredModel = initialModel || configQuery.data?.defaultModel;
+      if (preferredModel) {
+        // Check if the preferred model exists in the models list
+        const modelExists = modelsList.some(m => m.id === preferredModel);
         if (modelExists) {
-          setSelectedModel(initialModel);
+          setSelectedModel(preferredModel);
         } else {
-          // Fallback to first available model if initialModel not found
+          // Fallback to first available model if preferred model not found
           const firstAvailableModel = modelsList.find(
             m => m.isAvailable !== false,
           );
@@ -1430,7 +1591,7 @@ function ChatBaseInner({
           }
         }
       } else {
-        // No initialModel provided, select first available model
+        // No preferred model, select first available model
         const firstAvailableModel = modelsList.find(
           m => m.isAvailable !== false,
         );
@@ -1454,7 +1615,7 @@ function ChatBaseInner({
             const shouldEnableServer = isServerSelected(server);
 
             if (shouldEnableServer) {
-              const enabledToolNames = new Set(
+              const enabledToolNames = new Set<string>(
                 server.tools.filter(t => t.enabled).map(t => t.name),
               );
               newEnabledMcpTools.set(server.id, enabledToolNames);
@@ -1491,7 +1652,7 @@ function ChatBaseInner({
           server.enabled
         ) {
           // Newly added server - enable all tools
-          const enabledToolNames = new Set(
+          const enabledToolNames = new Set<string>(
             server.tools.filter(t => t.enabled).map(t => t.name),
           );
           newMap.set(server.id, enabledToolNames);
@@ -1627,9 +1788,9 @@ function ChatBaseInner({
     store.setFetching(runtimeId, true);
 
     // Build the history endpoint URL
-    const endpoint =
+    let endpoint =
       historyEndpoint ||
-      (protocol?.endpoint ? `${protocol.endpoint}/history` : null);
+      (protocol?.endpoint ? `${protocol.endpoint}/api/v1/history` : null);
 
     if (!endpoint) {
       console.warn(
@@ -1638,6 +1799,13 @@ function ChatBaseInner({
       );
       store.markFetched(runtimeId);
       return;
+    }
+
+    // Append agent_id query param if the protocol has an agentId
+    // and the URL doesn't already include one
+    if (protocol?.agentId && !endpoint.includes('agent_id=')) {
+      const separator = endpoint.includes('?') ? '&' : '?';
+      endpoint = `${endpoint}${separator}agent_id=${encodeURIComponent(protocol.agentId)}`;
     }
 
     // Fetch conversation history from server
@@ -1664,12 +1832,44 @@ function ChatBaseInner({
         }
 
         const data = await response.json();
-        const messages: ChatMessage[] = data.messages || [];
+        // Map server history messages to ChatMessage format.
+        // The server may return toolCalls in either the legacy {id, name, arguments}
+        // shape or the correct ToolCallContentPart {toolCallId, toolName, args} shape.
+        // Normalize both to ToolCallContentPart so the AG-UI adapter can serialize them.
+        const messages: ChatMessage[] = (data.messages || []).map(
+          (msg: any) => {
+            if (msg.toolCalls && Array.isArray(msg.toolCalls)) {
+              msg.toolCalls = msg.toolCalls.map((tc: any) => {
+                // If already in ToolCallContentPart format, keep as-is
+                if (tc.toolCallId && tc.toolName) return tc;
+                // Legacy format: {id, name, arguments} → ToolCallContentPart
+                let parsedArgs = tc.args ?? tc.arguments ?? {};
+                if (typeof parsedArgs === 'string') {
+                  try {
+                    parsedArgs = JSON.parse(parsedArgs);
+                  } catch {
+                    parsedArgs = {};
+                  }
+                }
+                return {
+                  type: 'tool-call' as const,
+                  toolCallId: tc.toolCallId ?? tc.id ?? tc.tool_call_id ?? '',
+                  toolName: tc.toolName ?? tc.name ?? tc.tool_name ?? '',
+                  args: parsedArgs,
+                  status: tc.status ?? 'completed',
+                };
+              });
+            }
+            return msg as ChatMessage;
+          },
+        );
 
-        // Store in memory and update display
+        // Store in memory and convert to display items
         if (messages.length > 0) {
           store.setMessages(runtimeId, messages);
-          setDisplayItems(messages);
+          // Convert to display items: expand tool calls, merge tool results
+          const items = convertHistoryToDisplayItems(messages);
+          setDisplayItems(items);
         }
 
         store.markFetched(runtimeId);
@@ -2425,6 +2625,15 @@ function ChatBaseInner({
             )}
             {/* Inline header content (e.g., protocol label) */}
             {headerContent}
+            {showInformation && (
+              <IconButton
+                icon={InfoIcon}
+                aria-label="Information"
+                variant="invisible"
+                size="small"
+                onClick={onInformationClick}
+              />
+            )}
           </Box>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -2483,6 +2692,74 @@ function ChatBaseInner({
                 onClick={headerButtons.onSettings}
               />
             )}
+            {/* View mode segmented toggle */}
+            {chatViewMode && onChatViewModeChange && (
+              <Box
+                sx={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  bg: 'neutral.muted',
+                  borderRadius: '6px',
+                  p: '2px',
+                  gap: '1px',
+                }}
+              >
+                {(
+                  [
+                    {
+                      mode: 'floating' as const,
+                      icon: CommentDiscussionIcon,
+                      label: 'Full-height popup',
+                    },
+                    {
+                      mode: 'floating-small' as const,
+                      icon: DeviceMobileIcon,
+                      label: 'Floating popup',
+                    },
+                    {
+                      mode: 'sidebar' as const,
+                      icon: SidebarExpandIcon,
+                      label: 'Sidebar panel',
+                    },
+                  ] as const
+                ).map(({ mode, icon: ModeIcon, label }) => (
+                  <Box
+                    key={mode}
+                    as="button"
+                    aria-label={label}
+                    title={label}
+                    onClick={() => onChatViewModeChange(mode)}
+                    sx={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 26,
+                      height: 24,
+                      borderRadius: '4px',
+                      border: 'none',
+                      cursor: 'pointer',
+                      bg:
+                        chatViewMode === mode
+                          ? 'canvas.default'
+                          : 'transparent',
+                      boxShadow:
+                        chatViewMode === mode ? 'shadow.small' : 'none',
+                      color: chatViewMode === mode ? 'fg.default' : 'fg.muted',
+                      transition: 'all 0.15s ease',
+                      '&:hover': {
+                        color: 'fg.default',
+                        bg:
+                          chatViewMode === mode
+                            ? 'canvas.default'
+                            : 'neutral.subtle',
+                      },
+                    }}
+                  >
+                    <ModeIcon size={14} />
+                  </Box>
+                ))}
+              </Box>
+            )}
             {/* Custom header actions */}
             {headerActions}
           </Box>
@@ -2509,6 +2786,114 @@ function ChatBaseInner({
 
     if (!hasContext) return null;
 
+    // Build pie chart data from distribution or fallback to fields
+    const usedTokens = agentUsage!.totalTokens;
+    const windowTokens = agentUsage!.contextWindow;
+    const freeTokens = Math.max(0, windowTokens - usedTokens);
+    const pct = windowTokens > 0 ? (usedTokens / windowTokens) * 100 : 0;
+
+    // Build category breakdown from distribution or individual fields
+    const categories: { name: string; value: number; color: string }[] = [];
+    if (agentUsage!.distribution?.children?.length) {
+      const colorMap: Record<string, string> = {
+        'System Prompts': '#8250df',
+        'Tool Definitions': '#bf8700',
+        'User Messages': '#0969da',
+        'Assistant Messages': '#1a7f37',
+        'Tool Usage': '#cf222e',
+      };
+      for (const child of agentUsage!.distribution.children) {
+        categories.push({
+          name: child.name,
+          value: child.value,
+          color: colorMap[child.name] || '#6e7781',
+        });
+      }
+    } else {
+      // Fallback: build from individual fields
+      if (agentUsage!.systemPromptTokens > 0) {
+        categories.push({
+          name: 'System Prompts',
+          value: agentUsage!.systemPromptTokens,
+          color: '#8250df',
+        });
+      }
+      if (agentUsage!.toolTokens > 0) {
+        categories.push({
+          name: 'Tool Definitions',
+          value: agentUsage!.toolTokens,
+          color: '#bf8700',
+        });
+      }
+      const messageTokens =
+        (agentUsage!.userMessageTokens || 0) +
+        (agentUsage!.assistantMessageTokens || 0);
+      if (messageTokens > 0) {
+        categories.push({
+          name: 'Messages',
+          value: messageTokens,
+          color: '#0969da',
+        });
+      }
+      const toolResultTokens =
+        (agentUsage!.toolCallTokens || 0) + (agentUsage!.toolReturnTokens || 0);
+      if (toolResultTokens > 0) {
+        categories.push({
+          name: 'Tool Results',
+          value: toolResultTokens,
+          color: '#cf222e',
+        });
+      }
+    }
+
+    // Tiny filled pie chart options
+    const pieColor = pct > 90 ? '#cf222e' : pct > 70 ? '#bf8700' : '#0969da';
+    const freeSliceColor = 'var(--bgColor-muted, #f6f8fa)';
+    const freeSliceOverlayColor = 'var(--borderColor-default, #d1d9e0)';
+    const miniPieOption = {
+      animation: false,
+      series: [
+        {
+          type: 'pie',
+          radius: [0, '90%'],
+          center: ['50%', '50%'],
+          silent: true,
+          label: { show: false },
+          labelLine: { show: false },
+          data: [
+            { value: usedTokens, itemStyle: { color: pieColor } },
+            { value: freeTokens, itemStyle: { color: freeSliceColor } },
+          ],
+        },
+      ],
+    };
+
+    // Overlay detail pie options (donut for category breakdown)
+    const overlayPieOption = {
+      animation: false,
+      series: [
+        {
+          type: 'pie',
+          radius: ['45%', '80%'],
+          center: ['50%', '50%'],
+          silent: true,
+          label: { show: false },
+          labelLine: { show: false },
+          itemStyle: {
+            borderColor: 'var(--bgColor-default, #ffffff)',
+            borderWidth: 1,
+          },
+          data: [
+            ...categories.map(c => ({
+              value: c.value,
+              itemStyle: { color: c.color },
+            })),
+            { value: freeTokens, itemStyle: { color: freeSliceOverlayColor } },
+          ],
+        },
+      ],
+    };
+
     return (
       <Box
         sx={{
@@ -2520,11 +2905,170 @@ function ChatBaseInner({
           px: padding,
           bg: 'canvas.subtle',
           flexWrap: 'nowrap',
-          overflow: 'hidden',
+          overflow: 'visible',
           whiteSpace: 'nowrap',
           minWidth: 0,
         }}
       >
+        {/* Tiny pie chart with hover overlay */}
+        <Box
+          sx={{ position: 'relative', flexShrink: 0 }}
+          onMouseEnter={() => {
+            if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+            hoverTimeoutRef.current = setTimeout(
+              () => setContextOverlayOpen(true),
+              150,
+            );
+          }}
+          onMouseLeave={() => {
+            if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
+            hoverTimeoutRef.current = setTimeout(
+              () => setContextOverlayOpen(false),
+              250,
+            );
+          }}
+        >
+          <Box
+            ref={contextAnchorRef}
+            sx={{
+              cursor: 'pointer',
+              width: 20,
+              height: 20,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              border: '1px solid',
+              borderColor: 'border.default',
+              borderRadius: '50%',
+            }}
+          >
+            <ReactECharts
+              option={miniPieOption}
+              style={{ width: 18, height: 18 }}
+              opts={{ renderer: 'svg' }}
+            />
+          </Box>
+          {contextOverlayOpen && (
+            <Box
+              sx={{
+                position: 'absolute',
+                bottom: '100%',
+                left: 0,
+                mb: 1,
+                p: 3,
+                width: 260,
+                bg: 'canvas.overlay',
+                borderRadius: 2,
+                boxShadow: 'shadow.large',
+                border: '1px solid',
+                borderColor: 'border.default',
+                zIndex: 100,
+              }}
+            >
+              {/* Header */}
+              <Text
+                sx={{
+                  fontWeight: 'bold',
+                  fontSize: 1,
+                  color: 'fg.default',
+                  display: 'block',
+                  mb: 2,
+                }}
+              >
+                Context Window
+              </Text>
+              {/* Tokens summary */}
+              <Text
+                sx={{ fontSize: 0, color: 'fg.muted', display: 'block', mb: 1 }}
+              >
+                <Text
+                  as="span"
+                  sx={{ fontWeight: 'semibold', color: 'fg.default' }}
+                >
+                  {formatTokenCount(usedTokens)}
+                </Text>
+                {' / '}
+                {formatTokenCount(windowTokens)}
+                {' tokens'}
+              </Text>
+              {/* Percentage */}
+              <Text
+                sx={{
+                  fontSize: 0,
+                  color:
+                    pct > 90
+                      ? 'danger.fg'
+                      : pct > 70
+                        ? 'attention.fg'
+                        : 'fg.muted',
+                  fontWeight: 'semibold',
+                  display: 'block',
+                  mb: 2,
+                }}
+              >
+                {'• '}
+                {pct.toFixed(0)}%
+              </Text>
+              {/* Category donut in overlay */}
+              <Box sx={{ display: 'flex', justifyContent: 'center', mb: 2 }}>
+                <ReactECharts
+                  option={overlayPieOption}
+                  style={{ width: 80, height: 80 }}
+                  opts={{ renderer: 'svg' }}
+                />
+              </Box>
+              {/* Category breakdown */}
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                {categories.map(cat => {
+                  const catPct =
+                    usedTokens > 0 ? (cat.value / usedTokens) * 100 : 0;
+                  return (
+                    <Box
+                      key={cat.name}
+                      sx={{ display: 'flex', alignItems: 'center', gap: 2 }}
+                    >
+                      <Box
+                        sx={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: '50%',
+                          bg: cat.color,
+                          flexShrink: 0,
+                        }}
+                      />
+                      <Text sx={{ fontSize: 0, color: 'fg.muted', flex: 1 }}>
+                        {cat.name}
+                      </Text>
+                      <Text
+                        sx={{
+                          fontSize: 0,
+                          color: 'fg.default',
+                          fontWeight: 'semibold',
+                        }}
+                      >
+                        {catPct.toFixed(1)}%
+                      </Text>
+                    </Box>
+                  );
+                })}
+              </Box>
+              {/* Warning */}
+              {pct > 70 && (
+                <Text
+                  sx={{
+                    fontSize: 0,
+                    color: 'attention.fg',
+                    display: 'block',
+                    mt: 2,
+                    fontStyle: 'italic',
+                  }}
+                >
+                  Quality may decline as limit nears.
+                </Text>
+              )}
+            </Box>
+          )}
+        </Box>
         {/* Context window usage */}
         <Text sx={{ fontSize: 0, color: 'fg.muted', flexShrink: 0 }}>
           <Text
@@ -3165,8 +3709,8 @@ function ChatBaseInner({
     );
   };
 
-  // Render protocol mode input
-  const renderProtocolInput = () => {
+  // Render input prompt
+  const renderInputPrompt = () => {
     const availableTools = configQuery.data?.builtinTools || [];
     const models = availableModels || configQuery.data?.models || [];
 
@@ -3199,6 +3743,7 @@ function ChatBaseInner({
                 maxHeight: '120px',
                 overflow: 'hidden',
                 transition: 'height 0.1s ease-out',
+                py: '2px',
               }}
               rows={1}
             />
@@ -3744,7 +4289,7 @@ function ChatBaseInner({
       {footerContent}
 
       {/* Input */}
-      {showInput && renderProtocolInput()}
+      {showInput && renderInputPrompt()}
 
       {/* Powered by tag */}
       {showPoweredBy && <PoweredByTag {...poweredByProps} />}

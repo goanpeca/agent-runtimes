@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent_runtimes.specs.models import DEFAULT_MODEL
 from agent_runtimes.types import MCPServer
 
 
@@ -36,9 +37,9 @@ class JupyterChatConfig:
 
     def _create_default_config(self) -> None:
         """Create default configuration file."""
-        default_config = {
+        default_config: Dict[str, Any] = {
             "mcp_servers": [],
-            "default_model": "bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+            "default_model": DEFAULT_MODEL.value,
             "enabled_tools": [],
         }
         self.save_config(default_config)
@@ -71,9 +72,7 @@ class JupyterChatConfig:
     def get_default_model(self) -> str:
         """Get the default model ID."""
         config = self.load_config()
-        return config.get(
-            "default_model", "bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-        )
+        return config.get("default_model", DEFAULT_MODEL.value)
 
     def set_default_model(self, model_id: str) -> None:
         """Set the default model ID."""

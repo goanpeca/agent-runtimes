@@ -26,12 +26,7 @@ import React, {
 } from 'react';
 import { IconButton, Text, Tooltip } from '@primer/react';
 import { Box } from '@datalayer/primer-addons';
-import {
-  XIcon,
-  CommentDiscussionIcon,
-  SidebarExpandIcon,
-  SidebarCollapseIcon,
-} from '@primer/octicons-react';
+import { XIcon, CommentDiscussionIcon } from '@primer/octicons-react';
 import { AiAgentIcon } from '@datalayer/icons-react';
 
 import {
@@ -48,6 +43,7 @@ import {
   type BuiltinTool,
   type MCPServerConfig,
   type MCPServerTool,
+  type ChatViewMode,
 } from './base/ChatBase';
 import type { PoweredByTagProps } from './elements/PoweredByTag';
 import { useChatOpen, useChatMessages, useChatStore } from '../store/chatStore';
@@ -69,6 +65,7 @@ export type {
   BuiltinTool,
   MCPServerConfig,
   MCPServerTool,
+  ChatViewMode,
 };
 
 /**
@@ -221,9 +218,20 @@ export interface ChatFloatingProps {
 
   /**
    * Default view mode.
+   * - 'floating': Full-height floating panel (pinned to right edge with offset)
+   * - 'floating-small': Standard floating popup
+   * - 'panel': Full-height side panel (right edge, no floating offset)
    * @default 'floating'
    */
-  defaultViewMode?: 'floating' | 'panel';
+  defaultViewMode?: 'floating' | 'floating-small' | 'panel';
+
+  /**
+   * Callback when the user switches view mode via the header toggle.
+   * The parent component receives the new ChatViewMode value.
+   * When the user selects 'sidebar', the parent should switch to rendering
+   * a ChatSidebar instead.
+   */
+  onViewModeChange?: (mode: ChatViewMode) => void;
 
   /**
    * Show backdrop overlay in panel mode.
@@ -271,7 +279,7 @@ export interface ChatFloatingProps {
 
   /**
    * Endpoint URL for fetching conversation history.
-   * Defaults to `{protocol.endpoint}/history` when runtimeId is set.
+   * Defaults to `{protocol.endpoint}/api/v1/history` when runtimeId is set.
    */
   historyEndpoint?: string;
 
@@ -279,6 +287,16 @@ export interface ChatFloatingProps {
    * Auth token for the history endpoint.
    */
   historyAuthToken?: string;
+
+  /**
+   * Show the information icon in the header.
+   * When clicked, fires onInformationClick.
+   * @default false
+   */
+  showInformation?: boolean;
+
+  /** Callback when the information icon is clicked */
+  onInformationClick?: () => void;
 
   /** Additional ChatBase props */
   panelProps?: Partial<ChatBaseProps>;
@@ -348,6 +366,7 @@ export function ChatFloating({
   submitOnSuggestionClick = true,
   hideMessagesAfterToolUI = false,
   defaultViewMode = 'floating',
+  onViewModeChange,
   showPanelBackdrop = false,
   availableModels,
   showModelSelector = false,
@@ -357,6 +376,8 @@ export function ChatFloating({
   runtimeId,
   historyEndpoint,
   historyAuthToken,
+  showInformation = false,
+  onInformationClick,
   panelProps,
 }: ChatFloatingProps) {
   // Store-based state
@@ -377,10 +398,31 @@ export function ChatFloating({
   const isMobile = useIsMobile();
   const [isAnimating, setIsAnimating] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
-  const [viewMode, setViewMode] = useState<'floating' | 'panel'>(
-    defaultViewMode,
-  );
+  const [viewMode, setViewMode] = useState<
+    'floating' | 'floating-small' | 'panel'
+  >(defaultViewMode);
   const [focusTrigger, setFocusTrigger] = useState(0);
+
+  // Map internal viewMode to ChatViewMode for the header toggle
+  const chatViewMode: ChatViewMode =
+    viewMode === 'panel' ? 'sidebar' : viewMode;
+
+  // Handle view mode changes from the header segmented toggle
+  const handleChatViewModeChange = useCallback(
+    (mode: ChatViewMode) => {
+      if (mode === 'sidebar') {
+        // 'sidebar' means the parent should switch to a ChatSidebar layout.
+        // Notify parent and let it handle the transition.
+        onViewModeChange?.(mode);
+      } else {
+        // 'floating' or 'floating-small' stays within ChatFloating
+        setViewMode(mode);
+        setFocusTrigger(prev => prev + 1);
+        onViewModeChange?.(mode);
+      }
+    },
+    [onViewModeChange],
+  );
 
   // Build protocol config from endpoint if not provided directly
   // Memoize to avoid creating new object on every render (which would trigger useEffect re-runs)
@@ -609,30 +651,6 @@ export function ChatFloating({
       }
     : {};
 
-  // Toggle view mode handler
-  const handleToggleViewMode = useCallback(() => {
-    setViewMode(prev => (prev === 'floating' ? 'panel' : 'floating'));
-    setFocusTrigger(prev => prev + 1);
-  }, []);
-
-  // View mode toggle button
-  const viewModeToggle = !isMobile && (
-    <Tooltip
-      text={viewMode === 'floating' ? 'Expand to panel' : 'Collapse to popup'}
-      direction="s"
-    >
-      <IconButton
-        icon={viewMode === 'floating' ? SidebarExpandIcon : SidebarCollapseIcon}
-        aria-label={
-          viewMode === 'floating' ? 'Expand to panel' : 'Collapse to popup'
-        }
-        onClick={handleToggleViewMode}
-        variant="invisible"
-        size="small"
-      />
-    </Tooltip>
-  );
-
   // Close button for header
   const closeButton = (
     <Tooltip text={`Close${escapeToClose ? ' (Esc)' : ''}`} direction="s">
@@ -791,7 +809,19 @@ export function ChatFloating({
         className={className}
         sx={{
           position: 'fixed',
-          ...(viewMode === 'floating' && !isMobile ? getPositionStyles() : {}),
+          // floating (normal) — full-height column pinned to the right edge
+          ...(viewMode === 'floating' && !isMobile
+            ? {
+                top: 0,
+                right: 0,
+                bottom: 0,
+                left: 'auto',
+              }
+            : {}),
+          // floating-small — standard popup positioned via getPositionStyles()
+          ...(viewMode === 'floating-small' && !isMobile
+            ? getPositionStyles()
+            : {}),
           ...(viewMode === 'panel' && !isMobile
             ? {
                 top: 0,
@@ -803,19 +833,31 @@ export function ChatFloating({
           width:
             viewMode === 'panel' && !isMobile
               ? '420px'
-              : isMobile
-                ? '100%'
-                : typeof popupWidth === 'number'
+              : viewMode === 'floating' && !isMobile
+                ? typeof popupWidth === 'number'
                   ? `${popupWidth}px`
-                  : popupWidth,
+                  : popupWidth
+                : viewMode === 'floating-small' && !isMobile
+                  ? typeof popupWidth === 'number'
+                    ? `${popupWidth}px`
+                    : popupWidth
+                  : isMobile
+                    ? '100%'
+                    : typeof popupWidth === 'number'
+                      ? `${popupWidth}px`
+                      : popupWidth,
           height:
-            viewMode === 'panel' && !isMobile
+            (viewMode === 'panel' || viewMode === 'floating') && !isMobile
               ? 'auto'
-              : isMobile
-                ? '100%'
-                : typeof popupHeight === 'number'
+              : viewMode === 'floating-small' && !isMobile
+                ? typeof popupHeight === 'number'
                   ? `${popupHeight}px`
-                  : popupHeight,
+                  : popupHeight
+                : isMobile
+                  ? '100%'
+                  : typeof popupHeight === 'number'
+                    ? `${popupHeight}px`
+                    : popupHeight,
           display: 'flex',
           flexDirection: 'column',
           bg: 'canvas.default',
@@ -856,12 +898,9 @@ export function ChatFloating({
             onClear: handleClear,
             onSettings: onSettingsClick,
           }}
-          headerActions={
-            <>
-              {viewModeToggle}
-              {closeButton}
-            </>
-          }
+          headerActions={<>{closeButton}</>}
+          chatViewMode={chatViewMode}
+          onChatViewModeChange={handleChatViewModeChange}
           showPoweredBy={showPoweredBy}
           poweredByProps={{
             brandName: 'Datalayer',
@@ -889,6 +928,8 @@ export function ChatFloating({
           runtimeId={runtimeId}
           historyEndpoint={historyEndpoint}
           historyAuthToken={historyAuthToken}
+          showInformation={showInformation}
+          onInformationClick={onInformationClick}
           {...panelProps}
         >
           {children}

@@ -21,9 +21,6 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent as PydanticAgent
 
 from ..adapters.pydantic_ai_adapter import PydanticAIAdapter
-from ..config.agents import AGENT_SPECS
-from ..config.agents import get_agent_spec as get_library_agent_spec
-from ..config.agents import list_agent_specs as list_library_agents
 from ..mcp import get_mcp_manager, initialize_config_mcp_servers
 from ..mcp.catalog_mcp_servers import MCP_SERVER_CATALOG
 from ..mcp.lifecycle import get_mcp_lifecycle_manager
@@ -34,6 +31,10 @@ from ..services import (
     initialize_codemode_toolset,
     wire_skills_into_codemode,
 )
+from ..specs.agents import AGENT_SPECS
+from ..specs.agents import get_agent_spec as get_library_agent_spec
+from ..specs.agents import list_agent_specs as list_library_agents
+from ..specs.models import DEFAULT_MODEL
 from ..transports import AGUITransport, MCPUITransport, VercelAITransport
 from ..types import AgentSpec
 from .a2a import A2AAgentCard, register_a2a_agent, unregister_a2a_agent
@@ -303,7 +304,7 @@ class CreateAgentRequest(BaseModel):
         default="ag-ui", description="Transport protocol to use"
     )
     model: str = Field(
-        default="bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        default=DEFAULT_MODEL.value,
         description="Model to use",
     )
     system_prompt: str = Field(
@@ -340,6 +341,15 @@ class CreateAgentRequest(BaseModel):
     jupyter_sandbox: str | None = Field(
         default=None,
         description="Jupyter server URL with token for code sandbox (e.g., http://localhost:8888?token=xxx). If provided, codemode will use Jupyter kernel instead of local-eval sandbox.",
+    )
+    sandbox_variant: str | None = Field(
+        default=None,
+        description=(
+            "Sandbox variant to use for this agent.  "
+            "Accepted values: 'local-eval' (in-process Python exec, default), "
+            "'jupyter' (starts a Jupyter server per agent via code_sandboxes), "
+            "'local-jupyter' (connects to an existing Jupyter server — requires jupyter_sandbox URL)."
+        ),
     )
     agent_spec_id: str | None = Field(
         default=None,
@@ -426,6 +436,12 @@ async def create_agent(
                 request.enable_skills = True
             if not request.description and spec.description:
                 request.description = spec.description
+            # Use the model from the spec if the request still has the default
+            if request.model == DEFAULT_MODEL.value and spec.model:
+                request.model = spec.model
+            # Use the sandbox_variant from the spec if not set in the request
+            if not request.sandbox_variant and spec.sandbox_variant:
+                request.sandbox_variant = spec.sandbox_variant
 
         # Build list of non-MCP toolsets (skills, codemode, etc.)
         # MCP toolsets will be dynamically fetched at run time by the adapter
@@ -540,6 +556,11 @@ async def create_agent(
                     detail=f"Failed to configure Jupyter sandbox: {str(e)}",
                 )
 
+        # Determine the effective sandbox variant
+        effective_variant = request.sandbox_variant or (
+            "local-jupyter" if request.jupyter_sandbox else "local-eval"
+        )
+
         # Create shared sandbox for codemode and/or skills toolsets
         # This ensures state persistence between execute_code and skill script executions
         shared_sandbox = None
@@ -549,9 +570,40 @@ async def create_agent(
             or (
                 request.enable_codemode and request.jupyter_sandbox
             )  # Codemode with Jupyter
+            or (
+                request.enable_codemode and effective_variant == "jupyter"
+            )  # Codemode with jupyter variant
         )
         if need_shared_sandbox:
-            shared_sandbox = create_shared_sandbox(request.jupyter_sandbox)
+            if effective_variant == "jupyter":
+                # Delegate to code_sandboxes: create a per-agent sandbox
+                # that starts its own Jupyter server on a random free port.
+                try:
+                    from ..services.code_sandbox_manager import get_code_sandbox_manager
+
+                    sandbox_manager = get_code_sandbox_manager()
+                    agent_sandbox = sandbox_manager.create_agent_sandbox(
+                        agent_id=agent_id,
+                        variant="jupyter",
+                    )
+                    # Wrap in ManagedSandbox-like interface for compatibility
+                    shared_sandbox = agent_sandbox
+                    logger.info(f"Created per-agent Jupyter sandbox for '{agent_id}'")
+                except ImportError as e:
+                    logger.warning(
+                        f"code_sandboxes not installed, falling back to local-eval: {e}"
+                    )
+                    shared_sandbox = create_shared_sandbox(None)
+                except Exception as e:
+                    logger.error(
+                        f"Failed to create Jupyter sandbox for agent '{agent_id}': {e}"
+                    )
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to create Jupyter sandbox: {str(e)}",
+                    )
+            else:
+                shared_sandbox = create_shared_sandbox(request.jupyter_sandbox)
 
         # Add skills toolset if enabled
         if skills_enabled:
@@ -661,6 +713,7 @@ async def create_agent(
             pydantic_agent = PydanticAgent(
                 request.model,
                 system_prompt=final_system_prompt,
+                builtin_tools=(),  # Explicitly disable Pydantic AI built-in tools (e.g. CodeExecutionTool)
                 # Don't pass toolsets here - they'll be dynamically provided at run time
             )
             # Then wrap it with our adapter (pass agent_id for usage tracking)
@@ -1767,6 +1820,20 @@ async def start_all_agents_mcp_servers(
                     f"Configured sandbox manager for Jupyter: {body.jupyter_sandbox.split('?')[0]}"
                 )
                 logger.info(f"MCP proxy URL configured: {mcp_proxy_url}")
+
+                # Update startup_info on app.state so /health/startup
+                # reflects the reconfigured sandbox (e.g. after the
+                # runtimes-companion calls this endpoint).
+                existing_info: dict[str, Any] = (
+                    getattr(request.app.state, "startup_info", None) or {}
+                )
+                sandbox_block = existing_info.get("sandbox", {})
+                sandbox_block["variant"] = sandbox_variant
+                sandbox_block["jupyter_url"] = body.jupyter_sandbox.split("?")[0]
+                if mcp_proxy_url:
+                    sandbox_block["mcp_proxy_url"] = mcp_proxy_url
+                existing_info["sandbox"] = sandbox_block
+                request.app.state.startup_info = existing_info
             except Exception as e:
                 logger.warning(f"Failed to configure Jupyter sandbox: {e}")
 
@@ -1903,6 +1970,19 @@ async def start_agent_mcp_servers(
                     f"Configured sandbox manager for Jupyter: {body.jupyter_sandbox.split('?')[0]}"
                 )
                 logger.info(f"MCP proxy URL configured: {mcp_proxy_url}")
+
+                # Update startup_info on app.state so /health/startup
+                # reflects the reconfigured sandbox.
+                existing_info: dict[str, Any] = (
+                    getattr(request.app.state, "startup_info", None) or {}
+                )
+                sandbox_block = existing_info.get("sandbox", {})
+                sandbox_block["variant"] = sandbox_variant
+                sandbox_block["jupyter_url"] = body.jupyter_sandbox.split("?")[0]
+                if mcp_proxy_url:
+                    sandbox_block["mcp_proxy_url"] = mcp_proxy_url
+                existing_info["sandbox"] = sandbox_block
+                request.app.state.startup_info = existing_info
             except Exception as e:
                 logger.warning(f"Failed to configure Jupyter sandbox: {e}")
 

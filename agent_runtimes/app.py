@@ -24,10 +24,10 @@ from typing import Any, AsyncGenerator
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.routing import Mount
 
-from .config.agents import get_agent_spec
 from .mcp import (
     ensure_config_mcp_toolsets_event,
     get_mcp_lifecycle_manager,
@@ -61,6 +61,7 @@ from .routes import (
     vercel_ai_router,
 )
 from .routes.agents import set_api_prefix
+from .specs.agents import get_agent_spec
 
 # Load environment variables from .env file
 load_dotenv()
@@ -90,7 +91,8 @@ async def _create_and_register_cli_agent(
     all_mcp_servers: list[Any],
     api_prefix: str,
     protocol: str = "ag-ui",
-) -> None:
+    sandbox_variant: str | None = None,
+) -> dict[str, Any]:
     """
     Create and register an agent from CLI options.
 
@@ -106,6 +108,13 @@ async def _create_and_register_cli_agent(
         all_mcp_servers: All MCP servers (agent spec + CLI servers)
         api_prefix: API prefix for routes
         protocol: Transport protocol (ag-ui, vercel-ai, vercel-ai-jupyter, a2a)
+        sandbox_variant: Code sandbox variant ('local-eval', 'jupyter', or
+            'local-jupyter'). When 'jupyter', a per-agent Jupyter server is
+            started via code_sandboxes.
+
+    Returns:
+        A dictionary with startup information about the registered agent and
+        its sandbox (variant, jupyter host/port when applicable).
     """
 
     from pydantic_ai import Agent as PydanticAgent
@@ -126,7 +135,8 @@ async def _create_and_register_cli_agent(
     from .transports import AGUITransport, MCPUITransport
 
     logger.info(
-        f"Creating agent '{agent_id}' with codemode={enable_codemode}, skills={skills}"
+        f"Creating agent '{agent_id}' with codemode={enable_codemode}, "
+        f"skills={skills}, sandbox_variant={sandbox_variant}"
     )
 
     # Update the global codemode state so AgentDetails shows correct status
@@ -139,11 +149,52 @@ async def _create_and_register_cli_agent(
     # Get Jupyter sandbox URL from environment if configured
     jupyter_sandbox_url = os.getenv("AGENT_RUNTIMES_JUPYTER_SANDBOX")
 
-    # Create shared sandbox if both codemode and skills are enabled
+    # Determine effective sandbox variant
+    # Priority: CLI/env var > agent spec > environment-based default
+    effective_variant = (
+        sandbox_variant
+        or agent_spec.sandbox_variant
+        or ("local-jupyter" if jupyter_sandbox_url else "local-eval")
+    )
+
+    # Create shared sandbox if both codemode and skills are enabled,
+    # or when the jupyter variant is used with codemode.
     skills_enabled = len(skills) > 0
     shared_sandbox = None
-    if enable_codemode and skills_enabled:
-        shared_sandbox = create_shared_sandbox(jupyter_sandbox_url)
+    need_shared_sandbox = (
+        (enable_codemode and skills_enabled)
+        or (enable_codemode and jupyter_sandbox_url)
+        or (enable_codemode and effective_variant == "jupyter")
+    )
+    if need_shared_sandbox:
+        if effective_variant == "jupyter":
+            # Delegate to code_sandboxes: create a per-agent sandbox
+            # that starts its own Jupyter server on a random free port.
+            try:
+                from .services.code_sandbox_manager import get_code_sandbox_manager
+
+                sandbox_manager = get_code_sandbox_manager()
+                # Update manager config so /health/startup reports the
+                # correct variant instead of the default "local-eval".
+                sandbox_manager.configure(variant="jupyter")
+                shared_sandbox = sandbox_manager.create_agent_sandbox(
+                    agent_id=agent_id,
+                    variant="jupyter",
+                )
+                logger.info(
+                    f"Created per-agent Jupyter sandbox for CLI agent '{agent_id}'"
+                )
+            except ImportError as e:
+                raise RuntimeError(
+                    "Cannot create Jupyter sandbox: code_sandboxes package is not installed. "
+                    "Install it with: pip install code-sandboxes"
+                ) from e
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to create Jupyter sandbox for agent '{agent_id}': {e}"
+                ) from e
+        else:
+            shared_sandbox = create_shared_sandbox(jupyter_sandbox_url)
 
     # Add skills toolset if enabled
     if skills_enabled:
@@ -257,10 +308,11 @@ async def _create_and_register_cli_agent(
     )
 
     # Create the underlying Pydantic AI Agent
-    # Use default model - can be configured via environment
-    model = os.environ.get(
-        "AGENT_RUNTIMES_MODEL", "bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0"
-    )
+    # Use model from agent spec, environment variable override, or global default
+    from agent_runtimes.specs.models import DEFAULT_MODEL
+
+    env_model = os.environ.get("AGENT_RUNTIMES_MODEL")
+    model = env_model or agent_spec.model or DEFAULT_MODEL.value
 
     # Build the system prompt
     # When codemode is enabled and a codemode-specific prompt exists, use it
@@ -282,6 +334,7 @@ async def _create_and_register_cli_agent(
     pydantic_agent = PydanticAgent(
         model,
         system_prompt=system_prompt,
+        builtin_tools=(),  # Explicitly disable Pydantic AI built-in tools (e.g. CodeExecutionTool)
     )
 
     # Create codemode builder for dynamic rebuilding
@@ -587,6 +640,42 @@ async def _create_and_register_cli_agent(
         f"✓ Successfully created and registered CLI agent: {agent_id} (protocol: {protocol})"
     )
 
+    # Build startup info dict with agent and sandbox details
+    from agent_runtimes.specs.models import DEFAULT_MODEL
+
+    env_model = os.environ.get("AGENT_RUNTIMES_MODEL")
+    startup_model = env_model or agent_spec.model or DEFAULT_MODEL.value
+
+    startup_info: dict[str, Any] = {
+        "agent": {
+            "id": agent_id,
+            "name": agent_spec.name,
+            "protocol": protocol,
+            "model": startup_model,
+            "codemode": enable_codemode,
+            "skills": list(skills) if skills else [],
+            "mcp_servers": [s.id for s in all_mcp_servers] if all_mcp_servers else [],
+        },
+        "sandbox": {
+            "variant": effective_variant,
+        },
+    }
+
+    # Add Jupyter sandbox details when using the jupyter variant
+    if effective_variant == "jupyter" and shared_sandbox is not None:
+        jupyter_host = getattr(shared_sandbox, "_host", None)
+        jupyter_port = getattr(shared_sandbox, "_port", None)
+        jupyter_server_url = getattr(shared_sandbox, "_server_url", None)
+        jupyter_token = getattr(shared_sandbox, "_token", None)
+        startup_info["sandbox"]["jupyter_host"] = jupyter_host
+        startup_info["sandbox"]["jupyter_port"] = jupyter_port
+        startup_info["sandbox"]["jupyter_url"] = jupyter_server_url
+        startup_info["sandbox"]["jupyter_token"] = jupyter_token
+    elif effective_variant == "local-jupyter" and jupyter_sandbox_url:
+        startup_info["sandbox"]["jupyter_url"] = jupyter_sandbox_url
+
+    return startup_info
+
 
 class ServerConfig(BaseModel):
     """Configuration for the agent-runtimes server."""
@@ -823,8 +912,11 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
                         "Codemode enabled: skipping lifecycle manager MCP server startup (codemode will manage servers)"
                     )
 
+                # Read sandbox variant from environment
+                sandbox_variant = os.environ.get("AGENT_RUNTIMES_SANDBOX_VARIANT")
+
                 # Create and register the agent with codemode and skills if enabled
-                await _create_and_register_cli_agent(
+                startup_info = await _create_and_register_cli_agent(
                     app=app,
                     agent_id=agent_name,
                     agent_spec=agent_spec,
@@ -833,7 +925,11 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
                     all_mcp_servers=all_mcp_servers,
                     api_prefix=config.api_prefix,
                     protocol=protocol,
+                    sandbox_variant=sandbox_variant,
                 )
+                # Store startup info on app.state so the /health/startup
+                # endpoint can expose it to CLI consumers (e.g. codeai).
+                app.state.startup_info = startup_info
             else:
                 logger.warning(
                     f"Default agent '{default_agent_id}' not found in library"
@@ -903,6 +999,18 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         if not _is_reload_parent_process():
             await shutdown_config_mcp_toolsets()
 
+        # Stop all per-agent sandboxes (terminates any Jupyter servers
+        # that code_sandboxes started on behalf of agents).
+        try:
+            from .services.code_sandbox_manager import get_code_sandbox_manager
+
+            sandbox_manager = get_code_sandbox_manager()
+            sandbox_manager.stop_all_agent_sandboxes()
+            sandbox_manager.stop()
+            logger.info("All sandboxes stopped during shutdown")
+        except Exception as e:
+            logger.warning(f"Error stopping sandboxes during shutdown: {e}")
+
         logger.info("Shutting down agent-runtimes server...")
 
     app = FastAPI(
@@ -929,7 +1037,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
 
     # Include routers
     app.include_router(health_router)
-    app.include_router(history_router)  # No prefix - frontend calls /history directly
+    app.include_router(history_router, prefix=config.api_prefix)
     app.include_router(identity_router)  # No prefix - uses /api/v1/identity internally
     app.include_router(agents_router, prefix=config.api_prefix)
     app.include_router(acp_router, prefix=config.api_prefix)
@@ -968,6 +1076,25 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
                 "examples": f"{config.api_prefix}/examples/",
             },
         }
+
+    # Serve the built frontend assets (agent.html, JS/CSS bundles, etc.)
+    # at /static so that /static/agent.html works.
+    # Look for the dist/ directory in two locations:
+    #   1. Repo root (development: ../dist relative to this file)
+    #   2. Package data (PyPI: bundled inside the installed package)
+    _dist_dir = Path(__file__).resolve().parent.parent / "dist"
+    if not _dist_dir.is_dir():
+        # Fallback: check for a dist/ directory packaged inside the module
+        _dist_dir = Path(__file__).resolve().parent / "static" / "dist"
+    if _dist_dir.is_dir():
+        # Mount AFTER all API routes so it never shadows them.
+        # html=True enables serving index.html for directory requests.
+        app.mount(
+            "/static",
+            StaticFiles(directory=str(_dist_dir), html=True),
+            name="frontend-static",
+        )
+        logger.info(f"Serving frontend static files from {_dist_dir}")
 
     return app
 

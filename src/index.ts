@@ -8,6 +8,7 @@ export * from './state';
 export * from './runtime';
 export * from './identity';
 export * from './config';
+export * from './specs';
 
 // Explicitly re-export from types
 export type {
@@ -15,8 +16,8 @@ export type {
   MCPServer,
   AgentSkillSpec,
   AgentSpec,
-  AIModel,
+  AIModelRuntime,
   FrontendConfig,
   BuiltinTool,
   MCPServerTool,
-} from './types';
+} from './types/Types';

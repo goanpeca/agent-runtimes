@@ -9,7 +9,6 @@ Generates Python and TypeScript code from YAML agent specifications.
 """
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -165,12 +164,21 @@ from agent_runtimes.types import AgentSpec
                 else "None"
             )
 
+            # Model field
+            model_id = spec.get("model")
+            model_str = f'"{model_id}"' if model_id else "None"
+
+            # Sandbox variant field
+            sandbox_variant = spec.get("sandbox_variant")
+            sandbox_variant_str = f'"{sandbox_variant}"' if sandbox_variant else "None"
+
             code += f'''{const_name} = AgentSpec(
     id="{full_agent_id}",
     name="{spec["name"]}",
     description="{description}",
     tags={_fmt_list(spec.get("tags", []))},
     enabled={spec.get("enabled", True)},
+    model={model_str},
     mcp_servers=[{mcp_servers_str}],
     skills={_fmt_list(spec.get("skills", []))},
     environment_name="{spec.get("environment_name", "ai-agents-env")}",
@@ -181,6 +189,7 @@ from agent_runtimes.types import AgentSpec
     welcome_message="{welcome}",
     welcome_notebook={f'"{welcome_notebook}"' if welcome_notebook else "None"},
     welcome_document={f'"{welcome_document}"' if welcome_document else "None"},
+    sandbox_variant={sandbox_variant_str},
     system_prompt={system_prompt_str},
     system_prompt_codemode_addons={system_prompt_codemode_addons_str},
 )
@@ -222,14 +231,20 @@ def get_agent_spec(agent_id: str) -> AgentSpec | None:
     return AGENT_SPECS.get(agent_id)
 
 
-def list_agent_specs() -> list[AgentSpec]:
+def list_agent_specs(prefix: str | None = None) -> list[AgentSpec]:
     \"\"\"
     List all available agent specifications.
+
+    Args:
+        prefix: If provided, only return specs whose ID starts with this prefix.
 
     Returns:
         List of all AgentSpec configurations.
     \"\"\"
-    return list(AGENT_SPECS.values())
+    specs = list(AGENT_SPECS.values())
+    if prefix is not None:
+        specs = [s for s in specs if s.id.startswith(prefix)]
+    return specs
 """
 
     return code
@@ -299,7 +314,7 @@ def generate_typescript_code(
  * Generated from YAML specifications in specs/agents/
  */
 
-import type { AgentSpec } from '../../../types';
+import type { AgentSpec } from '../../../types/Types';
 """
 
     # Only add MCP server imports if needed
@@ -449,12 +464,23 @@ function toAgentSkillSpec(skill: SkillSpec) {
                 spec["description"].replace("\n", " ").replace("  ", " ").strip()
             )
 
+            # Model field
+            model_id = spec.get("model")
+            model_ts = f"'{model_id}'" if model_id else "undefined"
+
+            # Sandbox variant field
+            sandbox_variant = spec.get("sandbox_variant")
+            sandbox_variant_ts = (
+                f"'{sandbox_variant}'" if sandbox_variant else "undefined"
+            )
+
             code += f"""export const {const_name}: AgentSpec = {{
   id: '{full_agent_id}',
   name: '{spec["name"]}',
   description: `{description}`,
   tags: {tags_str},
   enabled: {str(spec.get("enabled", True)).lower()},
+  model: {model_ts},
   mcpServers: [{mcp_servers_str}],
   skills: [{skills_str}],
   environmentName: '{spec.get("environment_name", "ai-agents-env")}',
@@ -462,6 +488,7 @@ function toAgentSkillSpec(skill: SkillSpec) {
   emoji: {emoji},
   color: {color},
   suggestions: {suggestions_str},
+  sandboxVariant: {sandbox_variant_ts},
   systemPrompt: {f"`{system_prompt}`" if system_prompt else "undefined"},
   systemPromptCodemodeAddons: {f"`{system_prompt_codemode_addons}`" if system_prompt_codemode_addons else "undefined"},
 }};
@@ -497,9 +524,12 @@ export function getAgentSpecs(agentId: string): AgentSpec | undefined {
 
 /**
  * List all available agent specifications.
+ *
+ * @param prefix - If provided, only return specs whose ID starts with this prefix.
  */
-export function listAgentSpecs(): AgentSpec[] {
-  return Object.values(AGENT_SPECS);
+export function listAgentSpecs(prefix?: string): AgentSpec[] {
+  const specs = Object.values(AGENT_SPECS);
+  return prefix !== undefined ? specs.filter(s => s.id.startsWith(prefix)) : specs;
 }
 
 /**
@@ -621,7 +651,7 @@ def generate_subfolder_structure(specs: List[tuple[str, Dict[str, Any]]], args):
         # Create __init__.py for Python subfolder
         python_init = python_folder_dir / "__init__.py"
         with open(python_init, "w") as f:
-            f.write(f"""# Copyright (c) 2025-2026 Datalayer, Inc.
+            f.write("""# Copyright (c) 2025-2026 Datalayer, Inc.
 # Distributed under the terms of the Modified BSD License.
 
 from .agents import *
@@ -651,7 +681,7 @@ __all__ = ["AGENT_SPECS", "get_agent_spec", "list_agent_specs"]
         # Create index.ts for TypeScript subfolder
         typescript_index = typescript_folder_dir / "index.ts"
         with open(typescript_index, "w") as f:
-            f.write(f"""/*
+            f.write("""/*
  * Copyright (c) 2025-2026 Datalayer, Inc.
  * Distributed under the terms of the Modified BSD License.
  */
@@ -702,9 +732,16 @@ def get_agent_spec(agent_id: str) -> AgentSpec | None:
     return AGENT_SPECS.get(agent_id)
 
 
-def list_agent_specs() -> list[AgentSpec]:
-    \"\"\"List all available agent specifications.\"\"\"
-    return list(AGENT_SPECS.values())
+def list_agent_specs(prefix: str | None = None) -> list[AgentSpec]:
+    \"\"\"List all available agent specifications.
+
+    Args:
+        prefix: If provided, only return specs whose ID starts with this prefix.
+    \"\"\"
+    specs = list(AGENT_SPECS.values())
+    if prefix is not None:
+        specs = [s for s in specs if s.id.startswith(prefix)]
+    return specs
 
 __all__ = ["AGENT_SPECS", "get_agent_spec", "list_agent_specs"]
 """
@@ -756,9 +793,12 @@ export function getAgentSpecs(agentId: string): AgentSpec | undefined {
 
 /**
  * List all available agent specifications.
+ *
+ * @param prefix - If provided, only return specs whose ID starts with this prefix.
  */
-export function listAgentSpecs(): AgentSpec[] {
-  return Object.values(AGENT_SPECS);
+export function listAgentSpecs(prefix?: string): AgentSpec[] {
+  const specs = Object.values(AGENT_SPECS);
+  return prefix !== undefined ? specs.filter(s => s.id.startsWith(prefix)) : specs;
 }
 
 /**
