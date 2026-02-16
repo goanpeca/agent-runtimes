@@ -161,6 +161,12 @@ export interface ChatStandaloneProps {
    */
   renderToolResult?: RenderToolResult;
 
+  /**
+   * A prompt to append and send after the conversation history is loaded.
+   * The message is shown in the chat and sent to the agent exactly once.
+   */
+  pendingPrompt?: string;
+
   /** Additional ChatBase props */
   panelProps?: Partial<ChatBaseProps>;
 }
@@ -223,6 +229,7 @@ export function ChatStandalone({
   enableStreaming = true,
   emptyStateMessage = 'Start a conversation',
   renderToolResult,
+  pendingPrompt,
   panelProps,
 }: ChatStandaloneProps) {
   // Use Zustand store for state management
@@ -610,6 +617,7 @@ export function ChatStandalone({
             }}
             backgroundColor="canvas.subtle"
             focusTrigger={focusTrigger}
+            pendingPrompt={pendingPrompt}
             {...panelProps}
           >
             {children}

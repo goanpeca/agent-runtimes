@@ -260,6 +260,12 @@ export interface ChatProps {
   historyEndpoint?: string;
 
   /**
+   * A prompt to append and send after the conversation history is loaded.
+   * The message is shown in the chat and sent to the agent exactly once.
+   */
+  pendingPrompt?: string;
+
+  /**
    * Error banner to display at the top of the chat.
    * Use this to show sandbox connection errors or other warnings.
    */
@@ -371,6 +377,7 @@ export function Chat({
   onIdentityDisconnect,
   runtimeId,
   historyEndpoint,
+  pendingPrompt,
   errorBanner,
   showInformation = true,
   chatViewMode,
@@ -661,6 +668,7 @@ export function Chat({
             autoFocus={autoFocus}
             runtimeId={runtimeId}
             historyEndpoint={historyEndpoint}
+            pendingPrompt={pendingPrompt}
             showInformation={showInformation}
             onInformationClick={() => setShowDetails(true)}
             showModelSelector={showModelSelector}

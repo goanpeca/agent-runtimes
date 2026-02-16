@@ -119,6 +119,12 @@ export interface ChatSidebarProps {
   /** Description shown in empty state */
   description?: string;
 
+  /**
+   * A prompt to append and send after the conversation history is loaded.
+   * The message is shown in the chat and sent to the agent exactly once.
+   */
+  pendingPrompt?: string;
+
   /** Additional ChatBase props */
   panelProps?: Partial<ChatBaseProps>;
 }
@@ -171,6 +177,7 @@ export function ChatSidebar({
   enableStreaming = true,
   placeholder = 'Ask a question...',
   description,
+  pendingPrompt,
   panelProps,
 }: ChatSidebarProps) {
   const isOpen = useChatOpen();
@@ -447,6 +454,7 @@ export function ChatSidebar({
           description={description}
           onSendMessage={onSendMessage}
           enableStreaming={enableStreaming}
+          pendingPrompt={pendingPrompt}
           {...panelProps}
         >
           {children}

@@ -23,14 +23,12 @@ import React, {
   useEffect,
   useRef,
   useState,
-  type KeyboardEvent,
 } from 'react';
 import {
   Heading,
   Text,
   Spinner,
   IconButton,
-  Textarea,
   Button,
   ActionMenu,
   ActionList,
@@ -45,8 +43,6 @@ import {
   TrashIcon,
   GearIcon,
   PersonIcon,
-  PaperAirplaneIcon,
-  SquareCircleIcon,
   ToolsIcon,
   AiModelIcon,
   BriefcaseIcon,
@@ -92,6 +88,7 @@ import {
 import type { FrontendToolDefinition } from '../../types/tool';
 import { ToolCallDisplay } from '../display/ToolCallDisplay';
 import type { BuiltinTool as BuiltinToolType } from '../../../../types/Types';
+import { InputPrompt } from './InputPrompt';
 
 /**
  * View mode for the chat component.
@@ -796,6 +793,12 @@ export interface ChatBaseProps {
    * If not provided, uses the protocol's authToken.
    */
   historyAuthToken?: string;
+
+  /**
+   * A prompt to append and send after the conversation history is loaded.
+   * The message is shown in the chat and sent to the agent exactly once.
+   */
+  pendingPrompt?: string;
 }
 
 /**
@@ -1194,8 +1197,9 @@ export function ChatBase({
   runtimeId,
   historyEndpoint,
   historyAuthToken,
+  // Pending prompt
+  pendingPrompt,
 }: ChatBaseProps) {
-  // Convert agentRuntimeConfig to protocol if provided
   const protocol: ProtocolConfig | undefined = agentRuntimeConfig
     ? {
         type: agentRuntimeConfig.protocol || 'ag-ui',
@@ -1275,6 +1279,7 @@ export function ChatBase({
           runtimeId={runtimeId}
           historyEndpoint={historyEndpoint}
           historyAuthToken={historyAuthToken}
+          pendingPrompt={pendingPrompt}
         />
       </QueryClientProvider>
     );
@@ -1340,6 +1345,7 @@ export function ChatBase({
       runtimeId={runtimeId}
       historyEndpoint={historyEndpoint}
       historyAuthToken={historyAuthToken}
+      pendingPrompt={pendingPrompt}
     />
   );
 }
@@ -1409,9 +1415,16 @@ function ChatBaseInner({
   runtimeId,
   historyEndpoint,
   historyAuthToken,
+  // Pending prompt
+  pendingPrompt,
 }: ChatBaseProps) {
-  // Ensure Primer's default portal has high z-index for ActionMenu overlays
   useHighZIndexPortal();
+
+  // Stabilize the protocol reference so that the adapter-init effect only
+  // re-runs when the protocol *contents* actually change, not just when the
+  // parent re-renders with a new object literal that has the same values.
+
+  const protocolKey = protocol ? JSON.stringify(protocol) : '';
 
   // Store (optional for message persistence)
   const clearStoreMessages = useChatStore(state => state.clearMessages);
@@ -1426,7 +1439,12 @@ function ChatBaseInner({
   const [error, setError] = useState<Error | null>(null);
   const [input, setInput] = useState('');
 
-  // Model and tools state
+  // History-loaded flag — true immediately when there is nothing to fetch
+  const [historyLoaded, setHistoryLoaded] = useState(!runtimeId);
+  // Adapter-ready flag — flipped to true once the protocol adapter is initialised
+  const [adapterReady, setAdapterReady] = useState(false);
+  // Guard so the pending prompt is sent at most once
+  const pendingPromptSentRef = useRef(false);
   const [selectedModel, setSelectedModel] = useState<string>('');
   // enabledTools tracks which MCP server tools are enabled
   // Format: Map<serverId, Set<toolName>>
@@ -1781,6 +1799,7 @@ function ChatBaseInner({
       if (storedMessages.length > 0) {
         setDisplayItems(storedMessages);
       }
+      setHistoryLoaded(true);
       return;
     }
 
@@ -1798,6 +1817,7 @@ function ChatBaseInner({
         runtimeId,
       );
       store.markFetched(runtimeId);
+      setHistoryLoaded(true);
       return;
     }
 
@@ -1873,9 +1893,11 @@ function ChatBaseInner({
         }
 
         store.markFetched(runtimeId);
+        setHistoryLoaded(true);
       } catch (err) {
         console.error('[ChatBase] Failed to fetch conversation history:', err);
         store.markFetched(runtimeId);
+        setHistoryLoaded(true);
       }
     };
 
@@ -1941,6 +1963,7 @@ function ChatBaseInner({
     if (!adapter) return;
 
     adapterRef.current = adapter;
+    setAdapterReady(true);
 
     // Subscribe to protocol events
     unsubscribeRef.current = adapter.subscribe((event: ProtocolEvent) => {
@@ -2316,179 +2339,197 @@ function ChatBaseInner({
       unsubscribeRef.current?.();
       adapterRef.current?.disconnect();
     };
-    // Note: frontendTools is accessed via ref-like closure, not as reactive dependency
+    // protocolKey (JSON-serialised) replaces the protocol object reference so
+    // that parent re-renders producing a new-but-identical protocol object
+    // don't tear down and re-create the adapter mid-request.
+    // frontendTools is accessed via ref-like closure, not as reactive dependency
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [protocol, renderToolResult, onStateUpdate, useStoreMode]);
+  }, [protocolKey, renderToolResult, onStateUpdate, useStoreMode]);
 
   // Auto-scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [displayItems]);
 
-  // Handle sending message in protocol mode or custom mode
-  const handleSend = useCallback(async () => {
-    if (!input.trim() || isLoading) return;
+  // Handle sending message in protocol mode or custom mode.
+  // An optional messageOverride bypasses the input state (used by pendingPrompt).
+  const handleSend = useCallback(
+    async (messageOverride?: string) => {
+      const messageContent = (messageOverride ?? input).trim();
+      if (!messageContent || isLoading) return;
 
-    // Need either an adapter (protocol mode) or onSendMessage handler (custom mode)
-    if (!adapterRef.current && !onSendMessage) return;
+      // Need either an adapter (protocol mode) or onSendMessage handler (custom mode)
+      if (!adapterRef.current && !onSendMessage) return;
 
-    const messageContent = input.trim();
-    const userMessage = createUserMessage(messageContent);
-    const currentMessages = displayItems.filter(
-      (item): item is ChatMessage => !isToolCallMessage(item),
-    );
-    const allMessages = [...currentMessages, userMessage];
+      const userMessage = createUserMessage(messageContent);
+      const currentMessages = displayItems.filter(
+        (item): item is ChatMessage => !isToolCallMessage(item),
+      );
+      const allMessages = [...currentMessages, userMessage];
 
-    setDisplayItems(prev => [...prev, userMessage]);
-    setInput('');
-    setIsLoading(true);
-    setIsStreaming(true);
-    setError(null);
-    currentAssistantMessageRef.current = null;
+      setDisplayItems(prev => [...prev, userMessage]);
+      setInput('');
+      setIsLoading(true);
+      setIsStreaming(true);
+      setError(null);
+      currentAssistantMessageRef.current = null;
 
-    // Persist user message to store if enabled
-    if (useStoreMode) {
-      useChatStore.getState().addMessage(userMessage);
-    }
+      // Persist user message to store if enabled
+      if (useStoreMode) {
+        useChatStore.getState().addMessage(userMessage);
+      }
 
-    try {
-      if (onSendMessage) {
-        // Custom mode: use the provided message handler
-        if (enableStreaming) {
-          // Streaming mode: create assistant message placeholder and stream updates
-          const assistantMessageId = generateMessageId();
-          const assistantMessage = createAssistantMessage('');
-          assistantMessage.id = assistantMessageId;
-          setDisplayItems(prev => [...prev, assistantMessage]);
-          currentAssistantMessageRef.current = assistantMessage;
-
-          if (useStoreMode) {
-            useChatStore.getState().addMessage(assistantMessage);
-            useChatStore.getState().startStreaming(assistantMessageId);
-          }
-
-          // Create abort controller for cancellation
-          abortControllerRef.current = new AbortController();
-
-          await onSendMessage(messageContent, allMessages, {
-            onChunk: (chunk: string) => {
-              // Append chunk to the assistant message
-              setDisplayItems(prev =>
-                prev.map(item =>
-                  item.id === assistantMessageId
-                    ? {
-                        ...item,
-                        content: (item as ChatMessage).content + chunk,
-                      }
-                    : item,
-                ),
-              );
-              if (useStoreMode) {
-                useChatStore
-                  .getState()
-                  .appendToStream(assistantMessageId, chunk);
-              }
-            },
-            onComplete: (fullResponse: string) => {
-              // Update assistant message with final content
-              setDisplayItems(prev =>
-                prev.map(item =>
-                  item.id === assistantMessageId
-                    ? { ...item, content: fullResponse }
-                    : item,
-                ),
-              );
-              if (useStoreMode) {
-                useChatStore
-                  .getState()
-                  .updateMessage(assistantMessageId, { content: fullResponse });
-                useChatStore.getState().stopStreaming();
-              }
-            },
-            onError: (error: Error) => {
-              // Update assistant message with error
-              const errorContent = `Error: ${error.message}`;
-              setDisplayItems(prev =>
-                prev.map(item =>
-                  item.id === assistantMessageId
-                    ? { ...item, content: errorContent }
-                    : item,
-                ),
-              );
-              if (useStoreMode) {
-                useChatStore
-                  .getState()
-                  .updateMessage(assistantMessageId, { content: errorContent });
-                useChatStore.getState().stopStreaming();
-              }
-              setError(error);
-            },
-            signal: abortControllerRef.current.signal,
-          });
-        } else {
-          // Non-streaming mode: wait for full response
-          const response = await onSendMessage(messageContent, allMessages);
-          if (response) {
-            const assistantMessage = createAssistantMessage(response);
+      try {
+        if (onSendMessage) {
+          // Custom mode: use the provided message handler
+          if (enableStreaming) {
+            // Streaming mode: create assistant message placeholder and stream updates
+            const assistantMessageId = generateMessageId();
+            const assistantMessage = createAssistantMessage('');
+            assistantMessage.id = assistantMessageId;
             setDisplayItems(prev => [...prev, assistantMessage]);
+            currentAssistantMessageRef.current = assistantMessage;
+
             if (useStoreMode) {
               useChatStore.getState().addMessage(assistantMessage);
+              useChatStore.getState().startStreaming(assistantMessageId);
+            }
+
+            // Create abort controller for cancellation
+            abortControllerRef.current = new AbortController();
+
+            await onSendMessage(messageContent, allMessages, {
+              onChunk: (chunk: string) => {
+                // Append chunk to the assistant message
+                setDisplayItems(prev =>
+                  prev.map(item =>
+                    item.id === assistantMessageId
+                      ? {
+                          ...item,
+                          content: (item as ChatMessage).content + chunk,
+                        }
+                      : item,
+                  ),
+                );
+                if (useStoreMode) {
+                  useChatStore
+                    .getState()
+                    .appendToStream(assistantMessageId, chunk);
+                }
+              },
+              onComplete: (fullResponse: string) => {
+                // Update assistant message with final content
+                setDisplayItems(prev =>
+                  prev.map(item =>
+                    item.id === assistantMessageId
+                      ? { ...item, content: fullResponse }
+                      : item,
+                  ),
+                );
+                if (useStoreMode) {
+                  useChatStore.getState().updateMessage(assistantMessageId, {
+                    content: fullResponse,
+                  });
+                  useChatStore.getState().stopStreaming();
+                }
+              },
+              onError: (error: Error) => {
+                // Update assistant message with error
+                const errorContent = `Error: ${error.message}`;
+                setDisplayItems(prev =>
+                  prev.map(item =>
+                    item.id === assistantMessageId
+                      ? { ...item, content: errorContent }
+                      : item,
+                  ),
+                );
+                if (useStoreMode) {
+                  useChatStore.getState().updateMessage(assistantMessageId, {
+                    content: errorContent,
+                  });
+                  useChatStore.getState().stopStreaming();
+                }
+                setError(error);
+              },
+              signal: abortControllerRef.current.signal,
+            });
+          } else {
+            // Non-streaming mode: wait for full response
+            const response = await onSendMessage(messageContent, allMessages);
+            if (response) {
+              const assistantMessage = createAssistantMessage(response);
+              setDisplayItems(prev => [...prev, assistantMessage]);
+              if (useStoreMode) {
+                useChatStore.getState().addMessage(assistantMessage);
+              }
             }
           }
+        } else if (adapterRef.current) {
+          // Protocol mode: use the adapter
+          // Convert frontend tools to AG-UI format (only serializable properties)
+          const toolsForRequest = (frontendTools || []).map(tool => ({
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.parameters || { type: 'object', properties: {} },
+          }));
+
+          // Get enabled MCP tool names and skill IDs
+          const enabledMcpToolNames = getEnabledMcpToolNames();
+          const enabledSkillIds = getEnabledSkillIds();
+
+          await adapterRef.current.sendMessage(userMessage, {
+            threadId: threadIdRef.current,
+            messages: allMessages,
+            ...(selectedModel && { model: selectedModel }),
+            tools: toolsForRequest,
+            // Include enabled MCP tools as builtin_tools for backend
+            builtinTools: enabledMcpToolNames,
+            // Include enabled skills for backend
+            skills: enabledSkillIds,
+            // Include connected identities with access tokens (use ref to avoid infinite loops)
+            identities: connectedIdentitiesRef.current,
+          } as Parameters<typeof adapterRef.current.sendMessage>[1]);
         }
-      } else if (adapterRef.current) {
-        // Protocol mode: use the adapter
-        // Convert frontend tools to AG-UI format (only serializable properties)
-        const toolsForRequest = (frontendTools || []).map(tool => ({
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.parameters || { type: 'object', properties: {} },
-        }));
-
-        // Get enabled MCP tool names and skill IDs
-        const enabledMcpToolNames = getEnabledMcpToolNames();
-        const enabledSkillIds = getEnabledSkillIds();
-
-        await adapterRef.current.sendMessage(userMessage, {
-          threadId: threadIdRef.current,
-          messages: allMessages,
-          ...(selectedModel && { model: selectedModel }),
-          tools: toolsForRequest,
-          // Include enabled MCP tools as builtin_tools for backend
-          builtinTools: enabledMcpToolNames,
-          // Include enabled skills for backend
-          skills: enabledSkillIds,
-          // Include connected identities with access tokens (use ref to avoid infinite loops)
-          identities: connectedIdentitiesRef.current,
-        } as Parameters<typeof adapterRef.current.sendMessage>[1]);
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          console.error('[ChatBase] Send error:', err);
+          const errorMessage = createAssistantMessage(
+            `Error: ${(err as Error).message}`,
+          );
+          setDisplayItems(prev => [...prev, errorMessage]);
+          setError(err as Error);
+        }
+      } finally {
+        setIsLoading(false);
+        setIsStreaming(false);
+        currentAssistantMessageRef.current = null;
+        abortControllerRef.current = null;
       }
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        console.error('[ChatBase] Send error:', err);
-        const errorMessage = createAssistantMessage(
-          `Error: ${(err as Error).message}`,
-        );
-        setDisplayItems(prev => [...prev, errorMessage]);
-        setError(err as Error);
-      }
-    } finally {
-      setIsLoading(false);
-      setIsStreaming(false);
-      currentAssistantMessageRef.current = null;
-      abortControllerRef.current = null;
-    }
-  }, [
-    input,
-    isLoading,
-    displayItems,
-    selectedModel,
-    frontendTools,
-    useStoreMode,
-    onSendMessage,
-    enableStreaming,
-    getEnabledMcpToolNames,
-    getEnabledSkillIds,
-  ]);
+    },
+    [
+      input,
+      isLoading,
+      displayItems,
+      selectedModel,
+      frontendTools,
+      useStoreMode,
+      onSendMessage,
+      enableStreaming,
+      getEnabledMcpToolNames,
+      getEnabledSkillIds,
+    ],
+  );
+
+  // Send the pending prompt once history is loaded and the
+  // adapter (or custom handler) is available.
+  useEffect(() => {
+    if (!pendingPrompt || pendingPromptSentRef.current) return;
+    if (!historyLoaded) return;
+    if (!adapterReady && !onSendMessage) return;
+    pendingPromptSentRef.current = true;
+    // Use a microtask to ensure the adapter subscription is fully wired.
+    queueMicrotask(() => handleSend(pendingPrompt));
+  }, [pendingPrompt, historyLoaded, adapterReady, handleSend, onSendMessage]);
 
   // Handle stop
   const handleStop = useCallback(() => {
@@ -2503,17 +2544,6 @@ function ChatBaseInner({
     setIsLoading(false);
     setIsStreaming(false);
   }, [useStoreMode]);
-
-  // Handle key press
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        handleSend();
-      }
-    },
-    [handleSend],
-  );
 
   // Handle new chat
   const handleNewChat = useCallback(() => {
@@ -3716,55 +3746,18 @@ function ChatBaseInner({
 
     return (
       <Box>
-        {/* Input Area */}
-        <Box
-          sx={{
-            p: padding,
-            borderTop: '1px solid',
-            borderColor: 'border.default',
-            bg: 'canvas.subtle',
-          }}
-        >
-          <Box sx={{ display: 'flex', gap: 2, alignItems: 'flex-end' }}>
-            <Textarea
-              ref={inputRef}
-              value={input}
-              onChange={e => {
-                setInput(e.target.value);
-                // Height adjustment happens via useEffect watching input
-              }}
-              onKeyDown={handleKeyDown}
-              placeholder={placeholder || 'Type a message...'}
-              disabled={isLoading}
-              sx={{
-                flex: 1,
-                resize: 'none',
-                minHeight: '40px',
-                maxHeight: '120px',
-                overflow: 'hidden',
-                transition: 'height 0.1s ease-out',
-                py: '2px',
-              }}
-              rows={1}
-            />
-            {isLoading ? (
-              <IconButton
-                icon={SquareCircleIcon}
-                aria-label="Stop"
-                onClick={handleStop}
-                sx={{ alignSelf: 'flex-end' }}
-              />
-            ) : (
-              <IconButton
-                icon={PaperAirplaneIcon}
-                aria-label="Send"
-                onClick={handleSend}
-                disabled={!input.trim()}
-                sx={{ alignSelf: 'flex-end' }}
-              />
-            )}
-          </Box>
-        </Box>
+        {/* Input Area — powered by the standalone InputPrompt component */}
+        <InputPrompt
+          placeholder={placeholder || 'Type a message...'}
+          isLoading={isLoading}
+          onSend={() => handleSend()}
+          onStop={handleStop}
+          autoFocus={autoFocus}
+          focusTrigger={focusTrigger}
+          padding={padding}
+          value={input}
+          onChange={setInput}
+        />
 
         {/* Token usage bar - between input and selectors */}
         {renderTokenUsage()}
