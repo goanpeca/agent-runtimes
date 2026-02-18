@@ -22,6 +22,7 @@ import {
   coreStore,
   iamStore,
   createDatalayerServiceManager,
+  DatalayerThemeProvider,
 } from '@datalayer/core';
 import { useChatStore } from '../components/chat/store';
 import { OAuthCallback } from '../identity';
@@ -422,7 +423,7 @@ export const ExampleApp: React.FC = () => {
   }
 
   return (
-    <JupyterReactTheme>
+    <DatalayerThemeProvider>
       <div style={{ width: '100vw', height: '100vh', overflow: 'hidden' }}>
         <div
           style={{
@@ -507,7 +508,7 @@ export const ExampleApp: React.FC = () => {
           ) : null}
         </div>
       </div>
-    </JupyterReactTheme>
+    </DatalayerThemeProvider>
   );
 };
 

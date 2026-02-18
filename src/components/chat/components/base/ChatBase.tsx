@@ -62,6 +62,10 @@ import {
   QueryClientContext,
 } from '@tanstack/react-query';
 import { Streamdown } from 'streamdown';
+import {
+  streamdownMarkdownStyles,
+  streamdownCodeBlockStyles,
+} from '../styles/streamdownStyles';
 import { PoweredByTag, type PoweredByTagProps } from '../elements/PoweredByTag';
 import { requestAPI } from '../../handler';
 import { useChatStore } from '../../store/chatStore';
@@ -1495,6 +1499,9 @@ function ChatBaseInner({
   const adapterRef = useRef<BaseProtocolAdapter | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const toolCallsRef = useRef<Map<string, ToolCallMessage>>(new Map());
+  // Track the number of in-flight frontend tool executions.
+  // While > 0, isLoading must stay true (the agent turn is not finished).
+  const pendingToolExecutionsRef = useRef(0);
   const currentAssistantMessageRef = useRef<ChatMessage | null>(null);
   const threadIdRef = useRef<string>(generateMessageId());
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -2011,10 +2018,36 @@ function ChatBaseInner({
               );
               newMessage.id = event.message.id || newMessage.id;
               currentAssistantMessageRef.current = newMessage;
-              setDisplayItems(prev => [...prev, newMessage]);
-              // Add message to store
+              // Guard against duplicates: if an item with the same ID
+              // already exists (e.g. continuation arriving after
+              // handleSend's finally cleared currentAssistantMessageRef),
+              // update it in place instead of appending a second copy.
+              setDisplayItems(prev => {
+                const existingIdx = prev.findIndex(
+                  item => !isToolCallMessage(item) && item.id === newMessage.id,
+                );
+                if (existingIdx >= 0) {
+                  const newItems = [...prev];
+                  newItems[existingIdx] = {
+                    ...(newItems[existingIdx] as ChatMessage),
+                    content: event.message?.content ?? '',
+                  };
+                  return newItems;
+                }
+                return [...prev, newMessage];
+              });
+              // Add message to store (only if truly new)
               if (useStoreMode) {
-                useChatStore.getState().addMessage(newMessage);
+                const existingInStore = useChatStore
+                  .getState()
+                  .messages.find(m => m.id === newMessage.id);
+                if (existingInStore) {
+                  useChatStore.getState().updateMessage(newMessage.id, {
+                    content: event.message?.content ?? '',
+                  });
+                } else {
+                  useChatStore.getState().addMessage(newMessage);
+                }
               }
             }
           }
@@ -2058,6 +2091,7 @@ function ChatBaseInner({
                 const toolHandler = frontendTool?.handler;
                 if (toolHandler && Object.keys(args).length > 0) {
                   // Execute frontend tool
+                  pendingToolExecutionsRef.current++;
                   (async () => {
                     try {
                       const result = await toolHandler(updatedToolCall.args);
@@ -2105,6 +2139,13 @@ function ChatBaseInner({
                             : item,
                         ),
                       );
+                    } finally {
+                      pendingToolExecutionsRef.current--;
+                      if (pendingToolExecutionsRef.current <= 0) {
+                        pendingToolExecutionsRef.current = 0;
+                        setIsLoading(false);
+                        setIsStreaming(false);
+                      }
                     }
                   })();
                 }
@@ -2130,6 +2171,7 @@ function ChatBaseInner({
               );
               const toolHandler = frontendTool?.handler;
               if (toolHandler && Object.keys(args).length > 0) {
+                pendingToolExecutionsRef.current++;
                 (async () => {
                   try {
                     const result = await toolHandler(args);
@@ -2177,6 +2219,13 @@ function ChatBaseInner({
                           : item,
                       ),
                     );
+                  } finally {
+                    pendingToolExecutionsRef.current--;
+                    if (pendingToolExecutionsRef.current <= 0) {
+                      pendingToolExecutionsRef.current = 0;
+                      setIsLoading(false);
+                      setIsStreaming(false);
+                    }
                   }
                 })();
               }
@@ -2500,8 +2549,13 @@ function ChatBaseInner({
           setError(err as Error);
         }
       } finally {
-        setIsLoading(false);
-        setIsStreaming(false);
+        // Only clear loading state if no frontend tool executions are
+        // still in flight.  When tools are pending, sendToolResult will
+        // trigger a continuation that eventually clears isLoading.
+        if (pendingToolExecutionsRef.current <= 0) {
+          setIsLoading(false);
+          setIsStreaming(false);
+        }
         currentAssistantMessageRef.current = null;
         abortControllerRef.current = null;
       }
@@ -2541,6 +2595,8 @@ function ChatBaseInner({
     if (useStoreMode) {
       useChatStore.getState().stopStreaming();
     }
+    // Reset pending tool counter so loading can clear
+    pendingToolExecutionsRef.current = 0;
     setIsLoading(false);
     setIsStreaming(false);
   }, [useStoreMode]);
@@ -2549,6 +2605,7 @@ function ChatBaseInner({
   const handleNewChat = useCallback(() => {
     setDisplayItems([]);
     toolCallsRef.current.clear();
+    pendingToolExecutionsRef.current = 0;
     setInput('');
     threadIdRef.current = generateMessageId();
     if (useStoreMode) {
@@ -3519,73 +3576,7 @@ function ChatBaseInner({
                       ? 'accent.emphasis'
                       : 'canvas.subtle',
                     color: isUser ? 'fg.onEmphasis' : 'fg.default',
-                    // Streamdown code block styling
-                    // Code block container
-                    '& [data-streamdown="code-block"]': {
-                      borderRadius: '8px',
-                      border: '1px solid',
-                      borderColor: 'border.default',
-                      overflow: 'hidden',
-                      my: 2,
-                    },
-                    // Code block header with language label and buttons
-                    '& [data-streamdown="code-block-header"]': {
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      backgroundColor: 'canvas.subtle',
-                      padding: '8px 12px',
-                      fontSize: '12px',
-                      color: 'fg.muted',
-                    },
-                    // Style the buttons in the header
-                    '& [data-streamdown="code-block-header"] button': {
-                      background: 'none',
-                      border: 'none',
-                      cursor: 'pointer',
-                      padding: '4px',
-                      color: 'fg.muted',
-                      borderRadius: '4px',
-                      '&:hover': {
-                        backgroundColor: 'neutral.muted',
-                        color: 'fg.default',
-                      },
-                    },
-                    // Code block body
-                    '& [data-streamdown="code-block-body"]': {
-                      backgroundColor: 'canvas.subtle',
-                      padding: '12px',
-                      margin: 0,
-                      overflow: 'auto',
-                      fontSize: '13px',
-                      lineHeight: 1.5,
-                    },
-                    // Make each line display as a block for line breaks
-                    '& [data-streamdown="code-block-body"] code': {
-                      display: 'block',
-                      fontFamily:
-                        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-                    },
-                    '& [data-streamdown="code-block-body"] code > span.block': {
-                      display: 'block',
-                    },
-                    '& [data-streamdown="code-block-body"] code > span': {
-                      display: 'block',
-                    },
-                    // General pre/code styling fallback
-                    '& pre': {
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                      overflowX: 'auto',
-                      margin: 0,
-                    },
-                    '& pre code': {
-                      whiteSpace: 'pre-wrap',
-                    },
-                    '& code': {
-                      fontFamily:
-                        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-                    },
+                    ...streamdownCodeBlockStyles,
                   }}
                 >
                   {isUser ? (
@@ -3599,21 +3590,7 @@ function ChatBaseInner({
                       {getMessageText(message)}
                     </Text>
                   ) : (
-                    <Box
-                      sx={{
-                        fontSize: 1,
-                        lineHeight: 1.5,
-                        '& ul, & ol': {
-                          marginTop: '0.5em',
-                          marginBottom: '0.5em',
-                          paddingInlineStart: '1.25em',
-                          listStylePosition: 'inside',
-                        },
-                        '& li': {
-                          paddingInlineStart: '0.25em',
-                        },
-                      }}
-                    >
+                    <Box sx={streamdownMarkdownStyles}>
                       <Streamdown>
                         {getMessageText(message) || (isStreaming ? '...' : '')}
                       </Streamdown>

@@ -7,7 +7,7 @@ on:
         description: 'Node.js version to use'
         required: false
         type: string
-        default: '20.x'
+        default: '22.x'
       install-command:
         description: 'Command to install dependencies'
         required: false
@@ -56,6 +56,8 @@ on:
 jobs:
   typescript-checks:
     runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: '--max-old-space-size=8192'
 
     steps:
     - uses: actions/checkout@v6

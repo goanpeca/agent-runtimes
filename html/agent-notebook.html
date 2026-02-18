@@ -8,25 +8,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Agent Runtimes Examples</title>
-
-    <!-- Datalayer Configuration -->
-    <script id="datalayer-config-data" type="application/json">
-      {
-        "runUrl": "%VITE_DATALAYER_RUN_URL%",
-        "token": "%VITE_DATALAYER_API_KEY%",
-        "credits": 100,
-        "cpuEnvironment": "python-cpu-env",
-        "gpuEnvironment": "ai-env"
-      }
-    </script>
+    <title>Datalayer ☰ Agent Notebook</title>
 
     <!-- Jupyter Configuration -->
     <script id="jupyter-config-data" type="application/json">
       {
-        "appName": "Agent Runtimes Examples",
-        "baseUrl": "%VITE_DATALAYER_RUN_URL%/api/jupyter-server",
-        "wsUrl": "%VITE_DATALAYER_RUN_URL_WS%/api/jupyter-server",
+        "appName": "Agent Notebook",
+        "baseUrl": "http://localhost:8888/api/jupyter-server",
+        "wsUrl": "ws://localhost:8888/api/jupyter-server",
         "token": "60c1661cc408f978c309d04157af55c9588ff9557c9380e4fb50785750703da6",
         "appUrl": "/lab",
         "themesUrl": "/lab/api/themes",
@@ -54,6 +43,6 @@
 
   <body>
     <div id="root"></div>
-    <script type="module" src="/src/examples/main.tsx"></script>
+    <script type="module" src="/src/agent-notebook-main.tsx"></script>
   </body>
 </html>

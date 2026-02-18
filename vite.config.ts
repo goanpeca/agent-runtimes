@@ -6,13 +6,14 @@
 /// <reference types="vitest/config" />
 
 import react from '@vitejs/plugin-react';
+import fs from 'fs';
 import path from 'path';
-import { defineConfig, loadEnv } from 'vite';
+import { defineConfig, loadEnv, type ServerOptions } from 'vite';
 import { treatAsCommonjs } from 'vite-plugin-treat-umd-as-commonjs';
 import wasm from 'vite-plugin-wasm';
 import topLevelAwait from 'vite-plugin-top-level-await';
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const target = env.VITE_APP_TARGET || process.env.VITE_APP_TARGET || 'app';
 
@@ -24,6 +25,24 @@ export default defineConfig(({ mode }) => {
     wasm(),
     topLevelAwait(),
     treatAsCommonjs(),
+    // After build, move HTML files from dist/html/ to dist/ so the FastAPI
+    // StaticFiles mount can serve them at /static/agent.html etc.
+    {
+      name: 'flatten-html-output',
+      closeBundle() {
+        const outDir = path.resolve(__dirname, 'dist');
+        const htmlDir = path.join(outDir, 'html');
+        if (fs.existsSync(htmlDir)) {
+          for (const file of fs.readdirSync(htmlDir)) {
+            if (file.endsWith('.html')) {
+              fs.renameSync(path.join(htmlDir, file), path.join(outDir, file));
+            }
+          }
+          // Remove the now-empty html/ directory (best-effort)
+          try { fs.rmdirSync(htmlDir); } catch { /* not empty – leave it */ }
+        }
+      },
+    },
     {
       name: 'raw-css-as-string',
       enforce: 'pre' as const,
@@ -51,6 +70,50 @@ export default defineConfig(({ mode }) => {
         return null;
       },
     },
+    // @jupyter-widgets/controls and html-manager use
+    //   version = require("../package.json").version;
+    // which fails at runtime because requirejs can't resolve the relative
+    // path.  Resolve it at build time to the actual package.json file.
+    {
+      name: 'resolve-jupyter-widgets-package-json',
+      enforce: 'pre' as const,
+      resolveId(source: string, importer: string | undefined) {
+        if (source === '../package.json' && importer) {
+          const normImporter = importer.replace(/\\/g, '/');
+          if (normImporter.includes('@jupyter-widgets/')) {
+            const dir = path.dirname(importer);
+            return path.resolve(dir, source);
+          }
+        }
+        return null;
+      },
+    },
+    // Fallback: patch Node.js-only references that survive CJS→ESM bundling.
+    // - require("../package.json").version from @jupyter-widgets
+    // - __dirname from mathjax-full
+    {
+      name: 'patch-node-references-in-bundle',
+      generateBundle(_options: any, bundle: any) {
+        for (const [, chunk] of Object.entries(bundle)) {
+          const c = chunk as any;
+          if (c.type !== 'chunk' || !c.code) continue;
+          let code = c.code;
+          let changed = false;
+          if (code.includes('require("../package.json")')) {
+            code = code.replace(
+              /require\("\.\.\/package\.json"\)\.version/g,
+              '"0.0.0"',
+            );
+            changed = true;
+          }
+          if (code.includes('__dirname')) {
+            code = code.replace(/\b__dirname\b/g, '"/"');
+            changed = true;
+          }
+          if (changed) c.code = code;
+        }
+      },
+    },
   ];
 
   if (isExamples) {
@@ -71,16 +134,16 @@ export default defineConfig(({ mode }) => {
     });
   }
 
-  const server = isShowcaseVercelAiElements
+  const server: ServerOptions = isShowcaseVercelAiElements
     ? {
         port: 3100,
-        open: '/index-showcase-vercel-ai-elements.html',
+        open: '/html/index-showcase-vercel-ai-elements.html',
         fs: { strict: false, allow: ['..', '../..', '../../..'] },
       }
     : isExamples
       ? {
           port: 3000,
-          open: '/examples.html',
+          open: '/html/examples.html',
           fs: { strict: false, allow: ['..', '../..', '../../..'] },
           proxy: {
             // Identity OAuth token exchange must go to local backend
@@ -109,6 +172,13 @@ export default defineConfig(({ mode }) => {
         }
       : {
           fs: { strict: false, allow: ['..', '../..', '../../..'] },
+          proxy: {
+            '/api': {
+              target: 'http://localhost:8765',
+              changeOrigin: true,
+              secure: false,
+            },
+          },
         };
 
   const build: any = {
@@ -128,13 +198,15 @@ export default defineConfig(({ mode }) => {
   if (isShowcaseVercelAiElements) {
     build.outDir = 'dist/showcase';
     build.emptyOutDir = true;
-    build.rollupOptions.input = path.resolve(__dirname, 'index-showcase-vercel-ai-elements.html');
+    build.rollupOptions.input = path.resolve(__dirname, 'html/index-showcase-vercel-ai-elements.html');
   } else if (isExamples) {
-    build.rollupOptions.input = path.resolve(__dirname, 'examples.html');
+    build.rollupOptions.input = path.resolve(__dirname, 'html/examples.html');
   } else {
     build.rollupOptions.input = {
-      main: path.resolve(__dirname, 'index.html'),
-      agent: path.resolve(__dirname, 'agent.html'),
+      main: path.resolve(__dirname, 'html/index.html'),
+      agent: path.resolve(__dirname, 'html/agent.html'),
+      'agent-notebook': path.resolve(__dirname, 'html/agent-notebook.html'),
+      'agent-lexical': path.resolve(__dirname, 'html/agent-lexical.html'),
     };
   }
 
@@ -184,7 +256,9 @@ export default defineConfig(({ mode }) => {
 
   // When building the default target, assets are served under /static/ by
   // the FastAPI StaticFiles mount, so we set base accordingly.
-  const base = (isShowcaseVercelAiElements || isExamples) ? '/' : '/static/';
+  // In dev mode (vite serve), use '/' so pages are accessible without the prefix.
+  const isServe = command === 'serve';
+  const base = (isShowcaseVercelAiElements || isExamples || isServe) ? '/' : '/static/';
 
   return {
     base,
