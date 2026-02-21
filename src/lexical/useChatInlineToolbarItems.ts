@@ -58,12 +58,22 @@ export interface ChatInlineToolbarState {
 }
 
 /**
+ * Options for useChatInlineToolbarItems.
+ */
+export interface ChatInlineToolbarOptions {
+  /** When true the AI sparkle button is rendered in a disabled state. */
+  disabled?: boolean;
+}
+
+/**
  * Hook that creates ToolbarItem[] for AI actions in the floating toolbar.
  *
  * Returns toolbar items (divider + AI sparkle button) and
  * state for controlling the ChatInline panel.
  */
-export function useChatInlineToolbarItems(): ChatInlineToolbarState {
+export function useChatInlineToolbarItems(
+  options?: ChatInlineToolbarOptions,
+): ChatInlineToolbarState {
   const [isAiOpen, setIsAiOpen] = useState(false);
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null);
 
@@ -85,6 +95,8 @@ export function useChatInlineToolbarItems(): ChatInlineToolbarState {
     setPendingPrompt(null);
   }, []);
 
+  const isDisabled = options?.disabled ?? false;
+
   const toolbarItems: ToolbarItem[] = useMemo(() => {
     return [
       {
@@ -97,12 +109,15 @@ export function useChatInlineToolbarItems(): ChatInlineToolbarState {
         type: 'button' as const,
         order: 901,
         ariaLabel: 'AI Actions',
-        title: 'AI Actions',
+        title: isDisabled
+          ? 'Assign an agent to enable AI actions'
+          : 'AI Actions',
         icon: SparkleFillIcon,
         onClick: openAi,
+        disabled: isDisabled,
       },
     ];
-  }, [openAi]);
+  }, [openAi, isDisabled]);
 
   return {
     toolbarItems,

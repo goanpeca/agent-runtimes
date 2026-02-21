@@ -18,5 +18,6 @@ export {
 
 export {
   useChatInlineToolbarItems,
+  type ChatInlineToolbarOptions,
   type ChatInlineToolbarState,
 } from './useChatInlineToolbarItems';
