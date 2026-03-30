@@ -145,40 +145,11 @@ export default defineConfig(({ mode, command }) => {
           port: 3000,
           open: '/html/examples.html',
           fs: { strict: false, allow: ['..', '../..', '../../..'] },
-          proxy: {
-            // Identity OAuth token exchange must go to local backend
-            '/api/v1/identity': {
-              target: 'http://localhost:8765',
-              changeOrigin: true,
-              secure: false,
-            },
-            '/api': {
-              target: 'https://prod1.datalayer.run',
-              changeOrigin: true,
-              secure: true,
-              configure: (proxy: any, _options: any) => {
-                proxy.on('proxyReq', (_proxyReq: any, req: any) => {
-                  console.log(
-                    'Proxying:',
-                    req.method,
-                    req.url,
-                    '->',
-                    'https://prod1.datalayer.run' + (req.url || ''),
-                  );
-                });
-              },
-            },
-          },
+
         }
       : {
           fs: { strict: false, allow: ['..', '../..', '../../..'] },
-          proxy: {
-            '/api': {
-              target: 'http://localhost:8765',
-              changeOrigin: true,
-              secure: false,
-            },
-          },
+
         };
 
   const build: any = {
@@ -234,6 +205,67 @@ export default defineConfig(({ mode, command }) => {
         '.whl': 'text',
         '.lexical': 'json',
       },
+      // Fix prismjs language component load-order crash during pre-bundling.
+      // When esbuild pre-bundles @lexical/code, it inlines the prismjs CJS
+      // IIFEs and may reorder their execution.  prism-cpp.js extends 'c',
+      // which in turn extends 'clike'.  If prism-c.js hasn't run yet,
+      // `Prism.languages.c` is undefined and `.extend('c', ...)` crashes:
+      //   TypeError: Cannot set properties of undefined (setting 'class-name')
+      // The esbuild plugin below intercepts each derived prism language file
+      // and prepends explicit `require()` calls for its prerequisites so that
+      // the base language is always registered first, regardless of how
+      // esbuild orders the inlined modules.
+      plugins: [
+        {
+          name: 'fix-prismjs-language-deps',
+          setup(build: any) {
+            // Map of prism language files → their prerequisite requires
+            const prismDeps: Record<string, string[]> = {
+              'prism-cpp': [
+                "require('prismjs');",
+                "require('prismjs/components/prism-clike.js');",
+                "require('prismjs/components/prism-c.js');",
+              ],
+              'prism-objectivec': [
+                "require('prismjs');",
+                "require('prismjs/components/prism-clike.js');",
+                "require('prismjs/components/prism-c.js');",
+              ],
+              'prism-javascript': [
+                "require('prismjs');",
+                "require('prismjs/components/prism-clike.js');",
+              ],
+              'prism-typescript': [
+                "require('prismjs');",
+                "require('prismjs/components/prism-clike.js');",
+                "require('prismjs/components/prism-javascript.js');",
+              ],
+              'prism-java': [
+                "require('prismjs');",
+                "require('prismjs/components/prism-clike.js');",
+              ],
+              'prism-c': [
+                "require('prismjs');",
+                "require('prismjs/components/prism-clike.js');",
+              ],
+              'prism-markdown': [
+                "require('prismjs');",
+                "require('prismjs/components/prism-markup.js');",
+              ],
+            };
+            for (const [lang, deps] of Object.entries(prismDeps)) {
+              const re = new RegExp(`prismjs[\\/\\\\]components[\\/\\\\]${lang}\\.js$`);
+              build.onLoad({ filter: re }, async (args: any) => {
+                const original = await fs.promises.readFile(args.path, 'utf8');
+                return {
+                  contents: deps.join('\n') + '\n' + original,
+                  loader: 'js' as const,
+                };
+              });
+            }
+          },
+        },
+      ],
     },
   };
 
@@ -272,6 +304,10 @@ export default defineConfig(({ mode, command }) => {
     assetsInclude: ['**/*.whl', '**/*.raw.css', '**/*.lexical'],
     build,
     resolve: {
+      // Force these packages to resolve from the root node_modules only.
+      // Without this, Vite follows the @datalayer/core symlink into the core
+      // source tree and picks up incompatible versions nestled there.
+      dedupe: ['date-fns', 'react', 'react-dom'],
       alias: [
         { find: '@', replacement: path.resolve(__dirname, './src') },
         { find: /^~(.*)$/, replacement: '$1' },

@@ -7,18 +7,19 @@
  * Main chat hook for chat component.
  * Provides chat state, message sending, and streaming functionality.
  *
- * @module components/chat/hooks/useChat
+ * @module chat/hooks/useChat
  */
 
 import { useCallback, useMemo } from 'react';
-import { useChatStore } from '../components/chat/store';
-import type { ChatMessage } from '../components/chat/types/message';
-import type { InferenceRequestOptions } from '../components/chat/types/inference';
+import { useChatStore } from '../stores';
+import type { ChatMessage } from '../types/messages';
+import type { InferenceRequestOptions } from '../types/inference';
 import {
   createUserMessage,
   createAssistantMessage,
   generateMessageId,
-} from '../components/chat/types/message';
+} from '../types/messages';
+import { sanitizeAssistantContent } from '../utils';
 
 /**
  * Return type for useChat hook
@@ -181,10 +182,12 @@ export function useChat(): UseChatReturn {
               case 'message':
                 // AG-UI sends incremental messages with accumulating content
                 if (event.message) {
-                  currentAssistantContent =
+                  const rawContent =
                     typeof event.message.content === 'string'
                       ? event.message.content
                       : '';
+                  currentAssistantContent =
+                    sanitizeAssistantContent(rawContent);
                   // Update the assistant message with the current content
                   updateMessage(assistantMessageId, {
                     content: currentAssistantContent,
@@ -306,10 +309,11 @@ export function useChat(): UseChatReturn {
               const unsubscribeContinuation = protocolAdapter.subscribe(
                 event => {
                   if (event.type === 'message' && event.message) {
-                    const content =
+                    const rawContent =
                       typeof event.message.content === 'string'
                         ? event.message.content
                         : '';
+                    const content = sanitizeAssistantContent(rawContent);
                     updateMessage(continuationAssistantId, {
                       content,
                       toolCalls: event.message.toolCalls,
@@ -377,8 +381,12 @@ export function useChat(): UseChatReturn {
           );
 
           // Update final message with complete content and tool calls
+          const finalAssistantContent =
+            typeof response.message.content === 'string'
+              ? sanitizeAssistantContent(response.message.content)
+              : response.message.content;
           updateMessage(assistantMessageId, {
-            content: response.message.content,
+            content: finalAssistantContent,
             toolCalls: response.message.toolCalls,
           });
 

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from versioning import ensure_spec_version, version_suffix
 
 
 def _fmt_list(items: list[str]) -> str:
@@ -33,6 +34,7 @@ def load_skill_specs(specs_dir: Path) -> list[dict[str, Any]]:
     for yaml_file in sorted(specs_dir.glob("*.yaml")):
         with open(yaml_file) as f:
             spec = yaml.safe_load(f)
+            ensure_spec_version(spec)
             specs.append(spec)
     return specs
 
@@ -52,25 +54,9 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
         '"""',
         "",
         "import os",
-        "from typing import Any, Dict, List",
-        "from dataclasses import dataclass",
+        "from typing import Dict, List",
         "",
-        "",
-        "@dataclass",
-        "class SkillSpec:",
-        '    """Skill specification."""',
-        "",
-        "    id: str",
-        "    name: str",
-        "    description: str",
-        "    module: str",
-        "    envvars: List[str]",
-        "    optional_env_vars: List[str]",
-        "    dependencies: List[str]",
-        "    tags: List[str]",
-        "    icon: str | None",
-        "    emoji: str | None",
-        "    enabled: bool",
+        "from agent_runtimes.types import SkillSpec",
         "",
         "",
         "# " + "=" * 76,
@@ -82,18 +68,47 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
     # Generate skill constants
     for spec in specs:
         skill_id = spec["id"]
-        const_name = f"{skill_id.upper().replace('-', '_')}_SKILL_SPEC"
+        version = spec["version"]
+        const_name = (
+            f"{skill_id.upper().replace('-', '_')}_SKILL_SPEC{version_suffix(version)}"
+        )
 
         icon = f'"{spec.get("icon")}"' if spec.get("icon") else "None"
         emoji = f'"{spec.get("emoji")}"' if spec.get("emoji") else "None"
+        module_val = f'"{spec["module"]}"' if spec.get("module") else "None"
+        package_val = f'"{spec["package"]}"' if spec.get("package") else "None"
+        method_val = f'"{spec["method"]}"' if spec.get("method") else "None"
+        path_val = f'"{spec["path"]}"' if spec.get("path") else "None"
 
-        lines.extend(
+        spec_lines = [
+            f"{const_name} = SkillSpec(",
+            f'    id="{skill_id}",',
+            f'    version="{version}",',
+            f'    name="{spec["name"]}",',
+            f'    description="{spec["description"]}",',
+            f"    module={module_val},",
+            f"    package={package_val},",
+            f"    method={method_val},",
+            f"    path={path_val},",
+        ]
+
+        # Only emit agentskills.io attributes when present in the YAML
+        if spec.get("license"):
+            spec_lines.append(f'    license="{spec["license"]}",')
+        if spec.get("compatibility"):
+            spec_lines.append(f'    compatibility="{spec["compatibility"]}",')
+        if spec.get("allowed-tools"):
+            spec_lines.append(f"    allowed_tools={_fmt_list(spec['allowed-tools'])},")
+        if spec.get("skill-metadata"):
+            skill_metadata_val = (
+                "{"
+                + ", ".join(f'"{k}": "{v}"' for k, v in spec["skill-metadata"].items())
+                + "}"
+            )
+            spec_lines.append(f"    skill_metadata={skill_metadata_val},")
+
+        spec_lines.extend(
             [
-                f"{const_name} = SkillSpec(",
-                f'    id="{skill_id}",',
-                f'    name="{spec["name"]}",',
-                f'    description="{spec["description"]}",',
-                f'    module="{spec.get("module", "")}",',
                 f"    envvars={_fmt_list(spec.get('envvars', []))},",
                 f"    optional_env_vars={_fmt_list(spec.get('optional_env_vars', []))},",
                 f"    dependencies={_fmt_list(spec.get('dependencies', []))},",
@@ -105,6 +120,8 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
                 "",
             ]
         )
+
+        lines.extend(spec_lines)
 
     # Generate catalog dictionary
     lines.extend(
@@ -119,7 +136,10 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
 
     for spec in specs:
         skill_id = spec["id"]
-        const_name = f"{skill_id.upper().replace('-', '_')}_SKILL_SPEC"
+        version = spec["version"]
+        const_name = (
+            f"{skill_id.upper().replace('-', '_')}_SKILL_SPEC{version_suffix(version)}"
+        )
         lines.append(f'    "{skill_id}": {const_name},')
 
     lines.extend(
@@ -139,12 +159,12 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
             '    """',
             "    if not env_vars:",
             "        return True",
-            "    return all(os.environ.get(var) for var in env_vars)",
+            "    return all(os.environ.get(var.rsplit(':', 1)[0]) for var in env_vars)",
             "",
             "",
             "def get_skill_spec(skill_id: str) -> SkillSpec | None:",
             '    """',
-            "    Get a skill specification by ID.",
+            "    Get a skill specification by ID (accepts both bare and versioned refs).",
             "",
             "    Args:",
             "        skill_id: The unique identifier of the skill.",
@@ -152,7 +172,13 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
             "    Returns:",
             "        The SkillSpec, or None if not found.",
             '    """',
-            "    return SKILL_CATALOG.get(skill_id)",
+            "    spec = SKILL_CATALOG.get(skill_id)",
+            "    if spec is not None:",
+            "        return spec",
+            "    base, _, ver = skill_id.rpartition(':')",
+            "    if base and '.' in ver:",
+            "        return SKILL_CATALOG.get(base)",
+            "    return None",
             "",
             "",
             "def list_skill_specs() -> List[SkillSpec]:",
@@ -187,19 +213,7 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
         " * DO NOT EDIT MANUALLY - run 'make specs' to regenerate.",
         " */",
         "",
-        "export interface SkillSpec {",
-        "  id: string;",
-        "  name: string;",
-        "  description: string;",
-        "  module: string;",
-        "  requiredEnvVars: string[];",
-        "  optionalEnvVars: string[];",
-        "  dependencies: string[];",
-        "  tags: string[];",
-        "  icon?: string;",
-        "  emoji?: string;",
-        "  enabled: boolean;",
-        "}",
+        "import type { SkillSpec } from '../types';",
         "",
         "// " + "=" * 76,
         "// Skill Definitions",
@@ -210,7 +224,10 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
     # Generate skill constants
     for spec in specs:
         skill_id = spec["id"]
-        const_name = f"{skill_id.upper().replace('-', '_')}_SKILL_SPEC"
+        version = spec["version"]
+        const_name = (
+            f"{skill_id.upper().replace('-', '_')}_SKILL_SPEC{version_suffix(version)}"
+        )
 
         # Format arrays for TypeScript
         envvars_json = str(spec.get("envvars", [])).replace("'", '"')
@@ -223,14 +240,39 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
         # Format optional fields
         icon = f"'{spec.get('icon')}'" if spec.get("icon") else "undefined"
         emoji = f"'{spec.get('emoji')}'" if spec.get("emoji") else "undefined"
+        module_ts = f"'{spec['module']}'" if spec.get("module") else "undefined"
+        package_ts = f"'{spec['package']}'" if spec.get("package") else "undefined"
+        method_ts = f"'{spec['method']}'" if spec.get("method") else "undefined"
+        path_ts = f"'{spec['path']}'" if spec.get("path") else "undefined"
 
-        lines.extend(
+        ts_lines = [
+            f"export const {const_name}: SkillSpec = {{",
+            f"  id: '{skill_id}',",
+            f"  version: '{version}',",
+            f"  name: '{spec['name']}',",
+            f"  description: '{spec['description']}',",
+            f"  module: {module_ts},",
+            f"  package: {package_ts},",
+            f"  method: {method_ts},",
+            f"  path: {path_ts},",
+        ]
+
+        # Only emit agentskills.io attributes when present in the YAML
+        if spec.get("license"):
+            ts_lines.append(f"  license: '{spec['license']}',")
+        if spec.get("compatibility"):
+            ts_lines.append(f"  compatibility: '{spec['compatibility']}',")
+        if spec.get("allowed-tools"):
+            allowed_tools_json = str(spec["allowed-tools"]).replace("'", '"')
+            ts_lines.append(f"  allowedTools: {allowed_tools_json},")
+        if spec.get("skill-metadata"):
+            meta_entries = ", ".join(
+                f"'{k}': '{v}'" for k, v in spec["skill-metadata"].items()
+            )
+            ts_lines.append(f"  skillMetadata: {{ {meta_entries} }},")
+
+        ts_lines.extend(
             [
-                f"export const {const_name}: SkillSpec = {{",
-                f"  id: '{skill_id}',",
-                f"  name: '{spec['name']}',",
-                f"  description: '{spec['description']}',",
-                f"  module: '{spec.get('module', '')}',",
                 f"  requiredEnvVars: {envvars_json},",
                 f"  optionalEnvVars: {optional_env_vars_json},",
                 f"  dependencies: {dependencies_json},",
@@ -242,6 +284,8 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
                 "",
             ]
         )
+
+        lines.extend(ts_lines)
 
     # Generate catalog object
     lines.extend(
@@ -256,7 +300,10 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
 
     for spec in specs:
         skill_id = spec["id"]
-        const_name = f"{skill_id.upper().replace('-', '_')}_SKILL_SPEC"
+        version = spec["version"]
+        const_name = (
+            f"{skill_id.upper().replace('-', '_')}_SKILL_SPEC{version_suffix(version)}"
+        )
         lines.append(f"  '{skill_id}': {const_name},")
 
     lines.extend(
@@ -267,8 +314,18 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
             "  return Object.values(SKILL_CATALOG);",
             "}",
             "",
+            "function resolveSkillId(skillId: string): string {",
+            "  if (skillId in SKILL_CATALOG) return skillId;",
+            "  const idx = skillId.lastIndexOf(':');",
+            "  if (idx > 0) {",
+            "    const base = skillId.slice(0, idx);",
+            "    if (base in SKILL_CATALOG) return base;",
+            "  }",
+            "  return skillId;",
+            "}",
+            "",
             "export function getSkillSpec(skillId: string): SkillSpec | undefined {",
-            "  return SKILL_CATALOG[skillId];",
+            "  return SKILL_CATALOG[resolveSkillId(skillId)];",
             "}",
             "",
         ]

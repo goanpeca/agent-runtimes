@@ -17,6 +17,7 @@ import logging
 import multiprocessing as mp
 import os
 import sys
+import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator
@@ -58,6 +59,9 @@ from .routes import (
     skills_router,
     start_a2a_task_managers,
     stop_a2a_task_managers,
+    tool_approvals_legacy_router,
+    tool_approvals_router,
+    triggers_webhook_router,
     vercel_ai_router,
 )
 from .routes.agents import set_api_prefix
@@ -77,6 +81,49 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+def _resolve_generated_code_path(explicit_path: str | None) -> str:
+    """Return a writable generated-code directory path.
+
+    Preference order:
+    1. Explicit env/CLI path (when writable)
+    2. Repo-local generated/ folder
+    3. Shared volume /mnt/shared-agent/generated
+    4. System temp dir fallback
+    """
+
+    repo_root = Path(__file__).resolve().parents[1]
+    default_path = (repo_root / "generated").resolve()
+
+    candidates: list[Path] = []
+    if explicit_path:
+        candidates.append(Path(explicit_path).resolve())
+    candidates.append(default_path)
+    candidates.append(Path("/mnt/shared-agent/generated"))
+    candidates.append(Path(tempfile.gettempdir()) / "agent-runtimes-generated")
+
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".write_probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+
+            if explicit_path and str(candidate) != str(Path(explicit_path).resolve()):
+                logger.warning(
+                    "Generated code folder '%s' not writable; falling back to '%s'",
+                    explicit_path,
+                    str(candidate),
+                )
+            return str(candidate)
+        except Exception:
+            pass
+
+    raise PermissionError(
+        "No writable generated code folder found (checked env path, repo generated/, "
+        "/mnt/shared-agent/generated, system temp dir)"
+    )
+
+
 def _is_reload_parent_process() -> bool:
     """Return True when running inside the reload supervisor parent."""
     return "--reload" in sys.argv and mp.current_process().name == "MainProcess"
@@ -90,7 +137,7 @@ async def _create_and_register_cli_agent(
     skills: list[str],
     all_mcp_servers: list[Any],
     api_prefix: str,
-    protocol: str = "ag-ui",
+    protocol: str = "vercel-ai",
     sandbox_variant: str | None = None,
 ) -> dict[str, Any]:
     """
@@ -118,6 +165,7 @@ async def _create_and_register_cli_agent(
     """
 
     from pydantic_ai import Agent as PydanticAgent
+    from pydantic_ai import DeferredToolRequests
 
     from .adapters.pydantic_ai_adapter import PydanticAIAdapter
     from .context.session import register_agent as register_agent_for_context
@@ -130,6 +178,9 @@ async def _create_and_register_cli_agent(
         create_shared_sandbox,
         create_skills_toolset,
         initialize_codemode_toolset,
+        register_agent_tools,
+        tools_require_approval,
+        tools_requiring_approval_ids,
         wire_skills_into_codemode,
     )
     from .transports import AGUITransport, MCPUITransport
@@ -226,13 +277,9 @@ async def _create_and_register_cli_agent(
             repo_root = Path(__file__).resolve().parents[1]
             workspace_path = str((repo_root / "workspace").resolve())
 
-        # Use AGENT_RUNTIMES_GENERATED_FOLDER if set, otherwise default to generated/
+        # Resolve a writable generated folder.
         generated_env = os.getenv("AGENT_RUNTIMES_GENERATED_CODE_FOLDER")
-        if generated_env:
-            generated_path = str(Path(generated_env).resolve())
-        else:
-            repo_root = Path(__file__).resolve().parents[1]
-            generated_path = str((repo_root / "generated").resolve())
+        generated_path = _resolve_generated_code_path(generated_env)
 
         # Use AGENT_RUNTIMES_SKILLS_FOLDER if set, otherwise repo-local skills/
         skills_folder_env = os.getenv("AGENT_RUNTIMES_SKILLS_FOLDER")
@@ -315,10 +362,14 @@ async def _create_and_register_cli_agent(
     model = env_model or agent_spec.model or DEFAULT_MODEL.value
 
     # Build the system prompt
-    # When codemode is enabled and a codemode-specific prompt exists, use it
-    # (appended to the base system prompt, same logic as routes/agents.py)
+    # Goal/system_prompt consolidation:
+    # 1. system_prompt (explicit technical prompt) takes highest priority
+    # 2. goal (user-facing objective) is used as the system prompt if no explicit prompt
+    # 3. description is the fallback
+    # When codemode is enabled and a codemode-specific prompt exists, it is appended.
     base_prompt = (
         agent_spec.system_prompt
+        or agent_spec.goal
         or agent_spec.description
         or "You are a helpful AI assistant."
     )
@@ -331,11 +382,60 @@ async def _create_and_register_cli_agent(
     if skills_prompt_section:
         system_prompt = system_prompt + "\n\n" + skills_prompt_section
 
-    pydantic_agent = PydanticAgent(
-        model,
-        system_prompt=system_prompt,
-        builtin_tools=(),  # Explicitly disable Pydantic AI built-in tools (e.g. CodeExecutionTool)
+    tool_ids = list(agent_spec.tools or [])
+    agent_kwargs: dict[str, Any] = {
+        "system_prompt": system_prompt,
+        # Explicitly disable Pydantic AI built-in tools (e.g. CodeExecutionTool)
+        "builtin_tools": (),
+    }
+    approval_tool_ids = tools_requiring_approval_ids(tool_ids)
+    # Only set DeferredToolRequests output type when using pydantic-deferred
+    # approval mode.  In the default "ai-agents-wrapper" mode the approval
+    # gate is handled by wrap_tool_with_approval and the agent output type
+    # should remain plain str to avoid output-validation failures.
+    _use_deferred = os.environ.get(
+        "AGENT_RUNTIMES_USE_PYDANTIC_DEFERRED_APPROVAL", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if tools_require_approval(tool_ids) and _use_deferred:
+        agent_kwargs["output_type"] = [str, DeferredToolRequests]
+        agent_kwargs["output_retries"] = 3
+        logger.info(
+            "Auto-enabled DeferredToolRequests for agent '%s'; tools requiring approval: %s",
+            agent_id,
+            approval_tool_ids,
+        )
+    elif approval_tool_ids:
+        logger.info(
+            "Agent '%s' has tools requiring approval (ai-agents-wrapper mode): %s",
+            agent_id,
+            approval_tool_ids,
+        )
+
+    pydantic_agent = PydanticAgent(model, **agent_kwargs)
+
+    # Register runtime tools declared in AgentSpec.
+    registered_tools = register_agent_tools(
+        pydantic_agent,
+        tool_ids,
+        agent_id=agent_id,
     )
+
+    # Wrap with DBOS durable execution if enabled (globally or per-spec)
+    durable_lifecycle = getattr(app.state, "durable_lifecycle", None) if app else None
+    if durable_lifecycle and durable_lifecycle.is_healthy():
+        try:
+            from .durable import DurableConfig, wrap_agent_durable
+
+            spec_config = DurableConfig.from_agent_spec(
+                getattr(agent_spec, "advanced", None)
+            )
+            if spec_config.enabled:
+                pydantic_agent = wrap_agent_durable(pydantic_agent, agent_id=agent_id)
+                logger.info(f"Agent '{agent_id}' wrapped with DBOS durable execution")
+        except Exception as exc:
+            logger.warning(
+                f"Failed to wrap agent '{agent_id}' with DBOS — continuing without durability: {exc}"
+            )
 
     # Create codemode builder for dynamic rebuilding
     codemode_builder = None
@@ -419,7 +519,6 @@ async def _create_and_register_cli_agent(
                 )
 
                 # Create new config - use CLI/env configured folders if provided
-                repo_root = Path(__file__).resolve().parents[1]
                 generated_folder = os.getenv("AGENT_RUNTIMES_GENERATED_CODE_FOLDER")
                 skills_folder_path = os.getenv("AGENT_RUNTIMES_SKILLS_FOLDER")
 
@@ -438,10 +537,10 @@ async def _create_and_register_cli_agent(
                     except Exception:
                         pass
 
+                repo_root = Path(__file__).resolve().parents[1]
                 new_config = CodeModeConfig(
                     workspace_path=str((repo_root / "workspace").resolve()),
-                    generated_path=generated_folder
-                    or str((repo_root / "generated").resolve()),
+                    generated_path=_resolve_generated_code_path(generated_folder),
                     skills_path=skills_folder_path
                     or str((repo_root / "skills").resolve()),
                     allow_direct_tool_calls=False,
@@ -561,6 +660,7 @@ async def _create_and_register_cli_agent(
         "enable_codemode": enable_codemode,
         "enable_skills": len(skills) > 0,
         "skills": list(skills) if skills else [],
+        "tools": list(agent_spec.tools) if agent_spec.tools else [],
         "jupyter_sandbox": jupyter_sandbox_url,
     }
     logger.info(f"Stored creation spec for CLI agent '{agent_id}'")
@@ -595,7 +695,11 @@ async def _create_and_register_cli_agent(
             from .routes.vercel_ai import register_vercel_agent
             from .transports import VercelAITransport
 
-            vercel_adapter = VercelAITransport(agent, agent_id=agent_id)
+            vercel_adapter = VercelAITransport(
+                agent,
+                agent_id=agent_id,
+                has_spec_frontend_tools=bool(agent_spec.frontend_tools),
+            )
             register_vercel_agent(agent_id, vercel_adapter)
             logger.info(f"Registered agent with Vercel AI: {agent_id}")
         except Exception as e:
@@ -606,7 +710,11 @@ async def _create_and_register_cli_agent(
             from .routes.vercel_ai import register_vercel_agent
             from .transports import VercelAITransport
 
-            vercel_adapter = VercelAITransport(agent, agent_id=agent_id)
+            vercel_adapter = VercelAITransport(
+                agent,
+                agent_id=agent_id,
+                has_spec_frontend_tools=bool(agent_spec.frontend_tools),
+            )
             register_vercel_agent(agent_id, vercel_adapter)
             logger.info(f"Registered agent with Vercel AI Jupyter: {agent_id}")
         except Exception as e:
@@ -654,6 +762,7 @@ async def _create_and_register_cli_agent(
             "model": startup_model,
             "codemode": enable_codemode,
             "skills": list(skills) if skills else [],
+            "tools": registered_tools,
             "mcp_servers": [s.id for s in all_mcp_servers] if all_mcp_servers else [],
         },
         "sandbox": {
@@ -719,6 +828,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     # Store reference to background task to prevent garbage collection
     _mcp_toolsets_task: asyncio.Task[Any] | None = None
     _mcp_servers_task: asyncio.Task[Any] | None = None
+    _durable_lifecycle: Any = None  # DurableLifecycle instance (when enabled)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -730,8 +840,24 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         None
             Control is yielded to FastAPI during the application runtime.
         """
-        nonlocal _mcp_toolsets_task, _mcp_servers_task
+        nonlocal _mcp_toolsets_task, _mcp_servers_task, _durable_lifecycle
         logger.info("Starting agent-runtimes server...")
+
+        # ---- DBOS Durable Execution ----
+        from .durable import DurableConfig, DurableLifecycle
+
+        durable_config = DurableConfig.from_env()
+        if durable_config.enabled:
+            _durable_lifecycle = DurableLifecycle(durable_config)
+            try:
+                await _durable_lifecycle.launch()
+                app.state.durable_lifecycle = _durable_lifecycle
+                logger.info("DBOS durable execution launched")
+            except Exception as exc:
+                logger.error(
+                    "DBOS launch failed — continuing without durability: %s", exc
+                )
+                _durable_lifecycle = None
 
         is_reload_parent = _is_reload_parent_process()
         logger.info(f"Reload parent check: {is_reload_parent}")
@@ -813,7 +939,10 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
                     if cli_mcp_servers_str
                     else []
                 )
-                protocol = os.environ.get("AGENT_RUNTIMES_PROTOCOL", "ag-ui")
+                protocol = os.environ.get(
+                    "AGENT_RUNTIMES_PROTOCOL",
+                    agent_spec.protocol or "vercel-ai",
+                )
                 no_catalog_mcp_servers = (
                     os.environ.get("AGENT_RUNTIMES_NO_CATALOG_MCP_SERVERS", "").lower()
                     == "true"
@@ -999,6 +1128,14 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         if not _is_reload_parent_process():
             await shutdown_config_mcp_toolsets()
 
+        # Shutdown DBOS durable execution
+        if _durable_lifecycle is not None:
+            try:
+                await _durable_lifecycle.shutdown()
+                logger.info("DBOS durable execution shut down")
+            except Exception as exc:
+                logger.warning("DBOS shutdown error: %s", exc)
+
         # Stop all per-agent sandboxes (terminates any Jupyter servers
         # that code_sandboxes started on behalf of agents).
         try:
@@ -1045,12 +1182,16 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(mcp_router, prefix=config.api_prefix)
     app.include_router(mcp_proxy_router, prefix=config.api_prefix)
     app.include_router(skills_router, prefix=config.api_prefix)
+    app.include_router(tool_approvals_router, prefix=config.api_prefix)
+    app.include_router(tool_approvals_legacy_router)
     app.include_router(vercel_ai_router, prefix=config.api_prefix)
     app.include_router(agui_router, prefix=config.api_prefix)
     app.include_router(mcp_ui_router, prefix=config.api_prefix)
     app.include_router(a2a_protocol_router, prefix=config.api_prefix)
     app.include_router(a2ui_router, prefix=config.api_prefix)
     app.include_router(examples_router, prefix=config.api_prefix)
+    if triggers_webhook_router is not None:
+        app.include_router(triggers_webhook_router, prefix=config.api_prefix)
 
     # Note: AG-UI mounts and example mounts are added dynamically during lifespan startup
 

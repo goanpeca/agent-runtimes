@@ -9,33 +9,17 @@ This file is AUTO-GENERATED from YAML specifications.
 DO NOT EDIT MANUALLY - run 'make specs' to regenerate.
 """
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict
 
-# ============================================================================
-# Environment Variable Specification
-# ============================================================================
-
-
-@dataclass
-class EnvvarSpec:
-    """Environment variable specification."""
-
-    id: str
-    name: str
-    description: str
-    registrationUrl: Optional[str]
-    tags: List[str]
-    icon: Optional[str]
-    emoji: Optional[str]
-
+from agent_runtimes.types import EnvvarSpec
 
 # ============================================================================
 # Environment Variable Definitions
 # ============================================================================
 
-ALPHAVANTAGE_API_KEY_SPEC = EnvvarSpec(
+ALPHAVANTAGE_API_KEY_SPEC_0_0_1 = EnvvarSpec(
     id="ALPHAVANTAGE_API_KEY",
+    version="0.0.1",
     name="Alpha Vantage API Key",
     description="API key for accessing Alpha Vantage financial market data and stock information. Provides real-time and historical stock prices, forex data, and cryptocurrency information.",
     registrationUrl="https://www.alphavantage.co/support/#api-key",
@@ -44,8 +28,9 @@ ALPHAVANTAGE_API_KEY_SPEC = EnvvarSpec(
     emoji="🔑",
 )
 
-GITHUB_TOKEN_SPEC = EnvvarSpec(
+GITHUB_TOKEN_SPEC_0_0_1 = EnvvarSpec(
     id="GITHUB_TOKEN",
+    version="0.0.1",
     name="GitHub Token",
     description="GitHub API token for repository management and code operations. Required for GitHub MCP server and GitHub skill to interact with GitHub repositories programmatically.",
     registrationUrl="https://github.com/settings/tokens",
@@ -54,8 +39,9 @@ GITHUB_TOKEN_SPEC = EnvvarSpec(
     emoji="🔑",
 )
 
-GOOGLE_OAUTH_CLIENT_ID_SPEC = EnvvarSpec(
+GOOGLE_OAUTH_CLIENT_ID_SPEC_0_0_1 = EnvvarSpec(
     id="GOOGLE_OAUTH_CLIENT_ID",
+    version="0.0.1",
     name="Google OAuth Client ID",
     description="OAuth 2.0 client ID for Google Workspace authentication. Required for Google Drive, Gmail, Calendar, and Docs integration through the Google Workspace MCP server.",
     registrationUrl="https://console.cloud.google.com/apis/credentials",
@@ -64,8 +50,9 @@ GOOGLE_OAUTH_CLIENT_ID_SPEC = EnvvarSpec(
     emoji="🔑",
 )
 
-GOOGLE_OAUTH_CLIENT_SECRET_SPEC = EnvvarSpec(
+GOOGLE_OAUTH_CLIENT_SECRET_SPEC_0_0_1 = EnvvarSpec(
     id="GOOGLE_OAUTH_CLIENT_SECRET",
+    version="0.0.1",
     name="Google OAuth Client Secret",
     description="OAuth 2.0 client secret for Google Workspace authentication. Used in conjunction with client ID for secure API access to Google services.",
     registrationUrl="https://console.cloud.google.com/apis/credentials",
@@ -81,8 +68,9 @@ GOOGLE_OAUTH_CLIENT_SECRET_SPEC = EnvvarSpec(
     emoji="🔒",
 )
 
-HF_TOKEN_SPEC = EnvvarSpec(
+HF_TOKEN_SPEC_0_0_1 = EnvvarSpec(
     id="HF_TOKEN",
+    version="0.0.1",
     name="Hugging Face Token",
     description="Access token for Hugging Face API. Required for Hugging Face MCP server authentication. Create a READ token from your settings.",
     registrationUrl="https://huggingface.co/settings/tokens",
@@ -91,8 +79,9 @@ HF_TOKEN_SPEC = EnvvarSpec(
     emoji="🔑",
 )
 
-KAGGLE_TOKEN_SPEC = EnvvarSpec(
+KAGGLE_TOKEN_SPEC_0_0_1 = EnvvarSpec(
     id="KAGGLE_TOKEN",
+    version="0.0.1",
     name="Kaggle API Token",
     description="API token for accessing Kaggle datasets, competitions, notebooks, and models. Required for Kaggle MCP server authentication.",
     registrationUrl="https://www.kaggle.com/settings/account",
@@ -101,8 +90,9 @@ KAGGLE_TOKEN_SPEC = EnvvarSpec(
     emoji="🔑",
 )
 
-SLACK_BOT_TOKEN_SPEC = EnvvarSpec(
+SLACK_BOT_TOKEN_SPEC_0_0_1 = EnvvarSpec(
     id="SLACK_BOT_TOKEN",
+    version="0.0.1",
     name="Slack Bot Token",
     description="OAuth token for Slack bot authentication. Required for Slack MCP server to send messages, manage channels, and interact with workspace members.",
     registrationUrl="https://api.slack.com/apps",
@@ -111,8 +101,9 @@ SLACK_BOT_TOKEN_SPEC = EnvvarSpec(
     emoji="🔑",
 )
 
-SLACK_CHANNEL_IDS_SPEC = EnvvarSpec(
+SLACK_CHANNEL_IDS_SPEC_0_0_1 = EnvvarSpec(
     id="SLACK_CHANNEL_IDS",
+    version="0.0.1",
     name="Slack Channel IDs",
     description="Comma-separated list of Slack channel IDs that the bot is allowed to access. Restricts bot operations to specific channels for security and organization.",
     registrationUrl=None,
@@ -121,8 +112,9 @@ SLACK_CHANNEL_IDS_SPEC = EnvvarSpec(
     emoji=None,
 )
 
-SLACK_TEAM_ID_SPEC = EnvvarSpec(
+SLACK_TEAM_ID_SPEC_0_0_1 = EnvvarSpec(
     id="SLACK_TEAM_ID",
+    version="0.0.1",
     name="Slack Team ID",
     description="Unique identifier for the Slack workspace (team). Required to specify which workspace the bot should connect to.",
     registrationUrl="https://api.slack.com/apps",
@@ -131,8 +123,9 @@ SLACK_TEAM_ID_SPEC = EnvvarSpec(
     emoji="🏢",
 )
 
-TAVILY_API_KEY_SPEC = EnvvarSpec(
+TAVILY_API_KEY_SPEC_0_0_1 = EnvvarSpec(
     id="TAVILY_API_KEY",
+    version="0.0.1",
     name="Tavily API Key",
     description="API key for Tavily web search and research capabilities. Required for web crawling, content extraction, and search operations.",
     registrationUrl="https://tavily.com/api-keys",
@@ -146,21 +139,28 @@ TAVILY_API_KEY_SPEC = EnvvarSpec(
 # ============================================================================
 
 ENVVAR_CATALOG: Dict[str, EnvvarSpec] = {
-    "ALPHAVANTAGE_API_KEY": ALPHAVANTAGE_API_KEY_SPEC,
-    "GITHUB_TOKEN": GITHUB_TOKEN_SPEC,
-    "GOOGLE_OAUTH_CLIENT_ID": GOOGLE_OAUTH_CLIENT_ID_SPEC,
-    "GOOGLE_OAUTH_CLIENT_SECRET": GOOGLE_OAUTH_CLIENT_SECRET_SPEC,
-    "HF_TOKEN": HF_TOKEN_SPEC,
-    "KAGGLE_TOKEN": KAGGLE_TOKEN_SPEC,
-    "SLACK_BOT_TOKEN": SLACK_BOT_TOKEN_SPEC,
-    "SLACK_CHANNEL_IDS": SLACK_CHANNEL_IDS_SPEC,
-    "SLACK_TEAM_ID": SLACK_TEAM_ID_SPEC,
-    "TAVILY_API_KEY": TAVILY_API_KEY_SPEC,
+    "ALPHAVANTAGE_API_KEY": ALPHAVANTAGE_API_KEY_SPEC_0_0_1,
+    "GITHUB_TOKEN": GITHUB_TOKEN_SPEC_0_0_1,
+    "GOOGLE_OAUTH_CLIENT_ID": GOOGLE_OAUTH_CLIENT_ID_SPEC_0_0_1,
+    "GOOGLE_OAUTH_CLIENT_SECRET": GOOGLE_OAUTH_CLIENT_SECRET_SPEC_0_0_1,
+    "HF_TOKEN": HF_TOKEN_SPEC_0_0_1,
+    "KAGGLE_TOKEN": KAGGLE_TOKEN_SPEC_0_0_1,
+    "SLACK_BOT_TOKEN": SLACK_BOT_TOKEN_SPEC_0_0_1,
+    "SLACK_CHANNEL_IDS": SLACK_CHANNEL_IDS_SPEC_0_0_1,
+    "SLACK_TEAM_ID": SLACK_TEAM_ID_SPEC_0_0_1,
+    "TAVILY_API_KEY": TAVILY_API_KEY_SPEC_0_0_1,
 }
 
 
 def get_envvar_spec(envvar_id: str) -> EnvvarSpec:
-    """Get environment variable specification by ID."""
-    if envvar_id not in ENVVAR_CATALOG:
+    """Get environment variable specification by ID (accepts both bare and versioned refs)."""
+    spec = ENVVAR_CATALOG.get(envvar_id)
+    if spec is not None:
+        return spec
+    # Try stripping version suffix for versioned refs like 'NAME:0.0.1'
+    base, _, ver = envvar_id.rpartition(":")
+    if base and "." in ver:
+        spec = ENVVAR_CATALOG.get(base)
+    if spec is None:
         raise ValueError(f"Unknown environment variable: {envvar_id}")
-    return ENVVAR_CATALOG[envvar_id]
+    return spec

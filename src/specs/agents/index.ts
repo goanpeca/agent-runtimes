@@ -11,24 +11,28 @@
 
 import type { AgentSpec } from '../../types';
 
-import { AGENT_SPECS as CODEAI_AGENTS } from './codeai';
-import { AGENT_SPECS as CODEMODE_PAPER_AGENTS } from './codemode-paper';
-import { AGENT_SPECS as DATALAYER_AI_AGENTS } from './datalayer-ai';
-import { AGENT_SPECS as MOCKS_AGENTS } from './mocks';
+import { AGENT_SPECS as ROOT_AGENTS } from './agents';
 
 // Merge all agent specs from subfolders
 export const AGENT_SPECS: Record<string, AgentSpec> = {
-  ...CODEAI_AGENTS,
-  ...CODEMODE_PAPER_AGENTS,
-  ...DATALAYER_AI_AGENTS,
-  ...MOCKS_AGENTS,
+  ...ROOT_AGENTS,
 };
+
+function resolveAgentId(agentId: string): string {
+  if (agentId in AGENT_SPECS) return agentId;
+  const idx = agentId.lastIndexOf(':');
+  if (idx > 0) {
+    const base = agentId.slice(0, idx);
+    if (base in AGENT_SPECS) return base;
+  }
+  return agentId;
+}
 
 /**
  * Get an agent specification by ID.
  */
 export function getAgentSpecs(agentId: string): AgentSpec | undefined {
-  return AGENT_SPECS[agentId];
+  return AGENT_SPECS[resolveAgentId(agentId)];
 }
 
 /**

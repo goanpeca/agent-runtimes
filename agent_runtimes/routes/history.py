@@ -7,16 +7,19 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from agent_runtimes.context.usage import get_usage_tracker
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["history"])
+
+MAX_UPSERT_MESSAGES = 500
+MAX_UPSERT_PAYLOAD_BYTES = 1_000_000
 
 
 # =========================================================================
@@ -40,6 +43,25 @@ class HistoryResponse(BaseModel):
     """Response containing conversation history."""
 
     messages: list[HistoryMessage]
+
+
+class HistoryUpsertRequest(BaseModel):
+    """Request payload for injecting/restoring conversation history."""
+
+    class InputMessage(BaseModel):
+        """Validated chat message payload accepted by upsert endpoint."""
+
+        role: Literal["user", "assistant", "system", "tool"]
+        content: str | list[dict[str, Any]]
+        createdAt: str | None = None
+        metadata: dict[str, Any] | None = None
+        toolCalls: list[dict[str, Any]] | None = None
+
+    messages: list[InputMessage] = Field(
+        default_factory=list,
+        max_length=MAX_UPSERT_MESSAGES,
+    )
+    replace: bool = True
 
 
 # =========================================================================
@@ -173,6 +195,65 @@ def _convert_to_chat_messages(
     return messages
 
 
+def _chat_message_to_internal(message: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert a chat-format message into internal usage-tracker structure."""
+    role = str(message.get("role") or "").lower()
+    created_at = (
+        str(message.get("createdAt"))
+        if message.get("createdAt")
+        else datetime.now(timezone.utc).isoformat()
+    )
+
+    if role == "assistant":
+        parts: list[dict[str, Any]] = []
+        content = message.get("content", "")
+        if isinstance(content, list):
+            content = json.dumps(content, ensure_ascii=False)
+        parts.append({"part_kind": "text", "content": str(content)})
+        for tool_call in message.get("toolCalls") or []:
+            if not isinstance(tool_call, dict):
+                continue
+            parts.append(
+                {
+                    "part_kind": "tool-call",
+                    "tool_name": tool_call.get("toolName"),
+                    "tool_call_id": tool_call.get("toolCallId"),
+                    "args": json.dumps(tool_call.get("args") or {}, ensure_ascii=False),
+                }
+            )
+        return {
+            "kind": "response",
+            "timestamp": created_at,
+            "parts": parts,
+        }
+
+    if role in {"user", "system", "tool"}:
+        part_kind = {
+            "user": "user-prompt",
+            "system": "system-prompt",
+            "tool": "tool-return",
+        }[role]
+        content = message.get("content", "")
+        if isinstance(content, list):
+            content = json.dumps(content, ensure_ascii=False)
+        part: dict[str, Any] = {
+            "part_kind": part_kind,
+            "content": str(content),
+        }
+        if role == "tool":
+            metadata = message.get("metadata") or {}
+            if isinstance(metadata, dict):
+                part["tool_call_id"] = metadata.get("toolCallId")
+                part["tool_name"] = metadata.get("toolName")
+        return {
+            "kind": "request",
+            "timestamp": created_at,
+            "parts": [part],
+        }
+
+    return None
+
+
 # =========================================================================
 # History Routes
 # =========================================================================
@@ -202,6 +283,61 @@ async def get_conversation_history(
     logger.debug(f"Returning {len(messages)} messages for agent '{agent_id}'")
 
     return HistoryResponse(messages=messages)
+
+
+@router.post("/history", response_model=dict)
+async def upsert_conversation_history(
+    body: HistoryUpsertRequest,
+    agent_id: str = Query(
+        default="default", description="Agent ID to restore history for"
+    ),
+) -> dict[str, Any]:
+    """Inject/restore conversation history for an agent."""
+    payload_size = len(
+        json.dumps(
+            [msg.model_dump(exclude_none=True) for msg in body.messages],
+            ensure_ascii=False,
+        ).encode("utf-8")
+    )
+    if payload_size > MAX_UPSERT_PAYLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "History payload too large "
+                f"({payload_size} bytes > {MAX_UPSERT_PAYLOAD_BYTES} bytes)"
+            ),
+        )
+
+    tracker = get_usage_tracker()
+    stats = tracker.register_agent(agent_id)
+
+    converted = [
+        internal
+        for internal in (
+            _chat_message_to_internal(msg.model_dump(exclude_none=True))
+            for msg in body.messages
+        )
+        if internal is not None
+    ]
+
+    if body.replace:
+        stats.message_history = converted
+    else:
+        stats.message_history = list(stats.message_history) + converted
+    stats.last_updated = datetime.now(timezone.utc)
+
+    logger.info(
+        "Restored %d messages for agent '%s' (replace=%s)",
+        len(converted),
+        agent_id,
+        body.replace,
+    )
+    return {
+        "success": True,
+        "agent_id": agent_id,
+        "messages": len(converted),
+        "replace": body.replace,
+    }
 
 
 @router.delete("/history", response_model=dict)

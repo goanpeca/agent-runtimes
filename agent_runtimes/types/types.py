@@ -4,7 +4,7 @@
 """Pydantic models for chat functionality and agent specifications."""
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,6 +17,7 @@ class EnvvarSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, by_alias=True)
 
     id: str = Field(..., description="Unique environment variable identifier")
+    version: str = Field(default="0.0.1", description="Environment variable version")
     name: str = Field(..., description="Display name for the environment variable")
     description: str = Field(default="", description="Environment variable description")
     registration_url: Optional[str] = Field(
@@ -38,14 +39,59 @@ class EnvvarSpec(BaseModel):
 class SkillSpec(BaseModel):
     """
     Specification for a skill.
+
+        Supports three variants:
+    - Variant 1 (name-based): Uses ``module`` to discover and load a skill
+      from a Python module path (e.g. ``agent_skills.events``).
+    - Variant 2 (package-based): Uses ``package`` and ``method`` to reference
+      a callable in an installable Python package.  Attributes such as
+      ``license``, ``compatibility``, ``allowed_tools``, and ``metadata``
+      are discovered at runtime from the ``SKILL.md`` packaged inside the
+      Python package — they should NOT be duplicated in the YAML spec.
+        - Variant 3 (path-based): Uses ``path`` to load a local skill directory
+            containing ``SKILL.md`` (relative to the configured skills folder).
     """
 
     model_config = ConfigDict(populate_by_name=True, by_alias=True)
 
     id: str = Field(..., description="Unique skill identifier")
+    version: str = Field(default="0.0.1", description="Skill version")
     name: str = Field(..., description="Display name for the skill")
     description: str = Field(default="", description="Skill description")
-    module: Optional[str] = Field(default=None, description="Python module path")
+    # Variant 1: module-based discovery
+    module: Optional[str] = Field(
+        default=None, description="Python module path for name-based discovery"
+    )
+    # Variant 2: package + method reference
+    package: Optional[str] = Field(
+        default=None, description="Python package containing the skill implementation"
+    )
+    method: Optional[str] = Field(
+        default=None, description="Callable/function name in the package"
+    )
+    # Variant 3: path to a local skill directory (or SKILL.md file)
+    path: Optional[str] = Field(
+        default=None,
+        description="Path to a local skill directory or SKILL.md file",
+    )
+    # agentskills.io frontmatter attributes
+    license: Optional[str] = Field(
+        default=None, description="License name or reference (agentskills.io spec)"
+    )
+    compatibility: Optional[str] = Field(
+        default=None, description="Environment requirements (agentskills.io spec)"
+    )
+    allowed_tools: List[str] = Field(
+        default_factory=list,
+        alias="allowed-tools",
+        description="Pre-approved tools the skill may use (agentskills.io spec)",
+    )
+    skill_metadata: Optional[Dict[str, str]] = Field(
+        default=None,
+        alias="skill-metadata",
+        description="Arbitrary key-value metadata (agentskills.io spec)",
+    )
+    # Common fields
     envvars: List[str] = Field(
         default_factory=list,
         description="Environment variable IDs required by this skill",
@@ -61,6 +107,410 @@ class SkillSpec(BaseModel):
     emoji: Optional[str] = Field(
         default=None,
         description="Unicode emoji for UI display",
+    )
+
+
+class ToolRuntimeSpec(BaseModel):
+    """Runtime binding for resolving a tool implementation."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    language: str = Field(
+        ...,
+        description="Implementation language ('python' or 'typescript')",
+    )
+    package: str = Field(
+        ...,
+        description="Module/package containing the implementation",
+    )
+    method: str = Field(
+        ...,
+        description="Callable/function name in the package",
+    )
+
+
+class ToolSpec(BaseModel):
+    """
+    Specification for a runtime tool.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    id: str = Field(..., description="Unique tool identifier")
+    version: str = Field(default="0.0.1", description="Tool version")
+    name: str = Field(..., description="Display name for the tool")
+    description: str = Field(default="", description="Tool description")
+    tags: List[str] = Field(default_factory=list, description="Tags for categorization")
+    enabled: bool = Field(default=True, description="Whether the tool is enabled")
+    approval: str = Field(
+        default="auto",
+        description="Approval policy for the tool ('auto' or 'manual')",
+    )
+    runtime: ToolRuntimeSpec = Field(
+        ...,
+        description="Runtime binding metadata",
+    )
+    icon: Optional[str] = Field(
+        default=None,
+        description="Octicon name for UI display",
+    )
+    emoji: Optional[str] = Field(
+        default=None,
+        description="Unicode emoji for UI display",
+    )
+
+
+class FrontendToolSpec(BaseModel):
+    """
+    Specification for a frontend tool set.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    id: str = Field(..., description="Unique frontend tool identifier")
+    version: str = Field(default="0.0.1", description="Frontend tool version")
+    name: str = Field(..., description="Display name for the frontend tool")
+    description: str = Field(default="", description="Frontend tool description")
+    tags: List[str] = Field(default_factory=list, description="Tags for categorization")
+    enabled: bool = Field(
+        default=True, description="Whether the frontend tool is enabled"
+    )
+    toolset: str = Field(
+        default="all",
+        description="Which tools from the toolset to include ('all' or a list)",
+    )
+    icon: Optional[str] = Field(
+        default=None,
+        description="Octicon name for UI display",
+    )
+    emoji: Optional[str] = Field(
+        default=None,
+        description="Unicode emoji for UI display",
+    )
+
+
+class AIModel(BaseModel):
+    """Specification for an AI model."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    id: str = Field(..., description="Unique model identifier")
+    version: str = Field(default="0.0.1", description="Model spec version")
+    name: str = Field(..., description="Display name")
+    description: str = Field(default="", description="Model description")
+    provider: str = Field(..., description="Provider name")
+    default: bool = Field(
+        default=False, description="Whether this is the default model"
+    )
+    required_env_vars: List[str] = Field(
+        default_factory=list,
+        description="Required environment variable names",
+    )
+
+
+class AIModels(str, Enum):
+    """Enumeration of all available AI model IDs.
+
+    Note: Enum members are generated by ``make specs``.
+    This base class is kept here as the canonical type; the generated
+    ``agent_runtimes.specs.models`` module re-populates members at import time.
+    """
+
+    pass
+
+
+class EvalSpec(BaseModel):
+    """Evaluation benchmark specification."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    id: str = Field(..., description="Unique eval identifier")
+    version: str = Field(default="0.0.1", description="Eval version")
+    name: str = Field(..., description="Display name")
+    description: str = Field(default="", description="Eval description")
+    category: Literal["Coding", "Knowledge", "Reasoning", "Agentic", "Safety"] = Field(
+        ..., description="Eval category"
+    )
+    task_count: int = Field(..., ge=0, description="Number of benchmark tasks")
+    metric: str = Field(..., description="Primary evaluation metric")
+    source: str = Field(default="", description="Source URL or dataset reference")
+    difficulty: Literal["easy", "medium", "hard", "expert"] = Field(
+        default="medium", description="Benchmark difficulty"
+    )
+    languages: List[str] = Field(default_factory=list, description="Target languages")
+
+
+class GuardrailPermissions(BaseModel):
+    """Permission toggles for a guardrail profile."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    read_data: bool = Field(default=False, description="Allow data reads")
+    write_data: bool = Field(default=False, description="Allow data writes")
+    execute_code: bool = Field(default=False, description="Allow code execution")
+    access_internet: bool = Field(default=False, description="Allow internet access")
+    send_email: bool = Field(default=False, description="Allow email sending")
+    deploy_production: bool = Field(
+        default=False, description="Allow production deploys"
+    )
+
+
+class TokenLimitsSpec(BaseModel):
+    """Token budget limits."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    per_run: str = Field(default="0", description="Token budget per run")
+    per_day: str = Field(default="0", description="Token budget per day")
+    per_month: str = Field(default="0", description="Token budget per month")
+
+
+class DataScopeSpec(BaseModel):
+    """Data-access scoping rules."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    allowed_systems: List[str] = Field(default_factory=list)
+    allowed_objects: List[str] = Field(default_factory=list)
+    denied_objects: List[str] = Field(default_factory=list)
+    denied_fields: List[str] = Field(default_factory=list)
+
+
+class DataHandlingSpec(BaseModel):
+    """Data output and PII handling policy."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    default_aggregation: bool = Field(default=False)
+    allow_row_level_output: bool = Field(default=False)
+    max_rows_in_output: int = Field(default=0, ge=0)
+    redact_fields: List[str] = Field(default_factory=list)
+    hash_fields: List[str] = Field(default_factory=list)
+    pii_detection: bool = Field(default=False)
+    pii_action: str = Field(default="warn")
+
+
+class ApprovalPolicySpec(BaseModel):
+    """Manual/automatic approval policy."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    require_manual_approval_for: List[str] = Field(default_factory=list)
+    auto_approved: List[str] = Field(default_factory=list)
+
+
+class ToolLimitsSpec(BaseModel):
+    """Tool-call limits for a run."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    max_tool_calls: int = Field(default=0, ge=0)
+    max_query_rows: int = Field(default=0, ge=0)
+    max_query_runtime: str = Field(default="0s")
+    max_time_window_days: int = Field(default=0, ge=0)
+
+
+class AuditSpec(BaseModel):
+    """Audit/logging policy."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    log_tool_calls: bool = Field(default=True)
+    log_query_metadata_only: bool = Field(default=False)
+    retain_days: int = Field(default=30, ge=0)
+    require_lineage_in_report: bool = Field(default=False)
+
+
+class ContentSafetySpec(BaseModel):
+    """Prompt-injection and untrusted-content policy."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    treat_crm_text_fields_as_untrusted: bool = Field(default=False)
+    do_not_follow_instructions_from_data: bool = Field(default=True)
+
+
+class GuardrailSpec(BaseModel):
+    """Guardrail specification."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    id: str = Field(..., description="Unique guardrail identifier")
+    version: str = Field(default="0.0.1", description="Guardrail version")
+    name: str = Field(..., description="Display name")
+    description: str = Field(default="", description="Guardrail description")
+    identity_provider: str = Field(..., description="Identity provider")
+    identity_name: str = Field(..., description="Identity name")
+    permissions: GuardrailPermissions = Field(
+        default_factory=GuardrailPermissions, description="Permission toggles"
+    )
+    token_limits: TokenLimitsSpec = Field(
+        default_factory=TokenLimitsSpec, description="Token budget limits"
+    )
+    data_scope: Optional[DataScopeSpec] = Field(
+        default=None, description="Data-access scope"
+    )
+    data_handling: Optional[DataHandlingSpec] = Field(
+        default=None, description="Data handling policy"
+    )
+    approval_policy: Optional[ApprovalPolicySpec] = Field(
+        default=None, description="Approval policy"
+    )
+    tool_limits: Optional[ToolLimitsSpec] = Field(
+        default=None, description="Tool invocation limits"
+    )
+    audit: Optional[AuditSpec] = Field(
+        default=None, description="Audit trail configuration"
+    )
+    content_safety: Optional[ContentSafetySpec] = Field(
+        default=None, description="Content safety settings"
+    )
+
+
+class MemorySpec(BaseModel):
+    """Specification for a memory backend."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    id: str = Field(..., description="Unique memory identifier")
+    version: str = Field(default="0.0.1", description="Memory spec version")
+    name: str = Field(..., description="Display name for the memory backend")
+    description: str = Field(default="", description="Memory backend description")
+    persistence: str = Field(
+        default="none",
+        description="Persistence level: none, session, cross-session, permanent",
+    )
+    scope: str = Field(
+        default="agent",
+        description="Memory scope: agent, team, repository, user, global",
+    )
+    backend: str = Field(default="in-memory", description="Storage backend identifier")
+    icon: str = Field(default="database", description="Icon identifier")
+    emoji: str = Field(default="\U0001f9e0", description="Emoji representation")
+
+
+class Memories(str, Enum):
+    """Enumeration of available memory backends.
+
+    Note: Enum members are generated by ``make specs``.
+    This base class is kept here as the canonical type; the generated
+    ``agent_runtimes.specs.memory`` module re-populates members at import time.
+    """
+
+    pass
+
+
+class NotificationField(BaseModel):
+    """Dynamic field definition for a notification channel."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    name: str = Field(..., description="Field key")
+    label: str = Field(..., description="Display label")
+    type: Literal["string", "boolean", "number"] = Field(..., description="Input type")
+    required: bool = Field(default=False, description="Whether this field is required")
+    placeholder: Optional[str] = Field(default=None, description="UI placeholder")
+    default: Optional[Any] = Field(default=None, description="Default value")
+
+
+class NotificationChannelSpec(BaseModel):
+    """Notification channel specification."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    id: str = Field(..., description="Unique channel identifier")
+    version: str = Field(default="0.0.1", description="Channel version")
+    name: str = Field(..., description="Display name")
+    description: str = Field(default="", description="Channel description")
+    icon: str = Field(default="bell", description="Icon identifier")
+    available: bool = Field(
+        default=True, description="Whether channel is currently available"
+    )
+    coming_soon: bool = Field(
+        default=False, description="Whether channel is planned but not available yet"
+    )
+    fields: List[NotificationField] = Field(
+        default_factory=list, description="Channel configuration fields"
+    )
+
+
+class OutputSpec(BaseModel):
+    """Output format specification."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    id: str = Field(..., description="Unique output identifier")
+    version: str = Field(default="0.0.1", description="Output version")
+    name: str = Field(..., description="Display name")
+    description: str = Field(default="", description="Output description")
+    icon: str = Field(default="", description="Icon identifier")
+    supports_template: bool = Field(
+        default=False, description="Whether this output supports templating"
+    )
+    supports_storage: bool = Field(
+        default=False, description="Whether this output can be persisted"
+    )
+    mime_types: List[str] = Field(
+        default_factory=list, description="Supported MIME types"
+    )
+
+
+class EventField(BaseModel):
+    """Dynamic field definition for an event type specification."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    name: str = Field(..., description="Field key")
+    label: str = Field(..., description="Display label")
+    type: Literal["string", "boolean", "number"] = Field(..., description="Value type")
+    required: bool = Field(default=False, description="Whether field is required")
+    description: Optional[str] = Field(default=None, description="Field description")
+    placeholder: Optional[str] = Field(default=None, description="UI placeholder")
+
+
+class EventSpec(BaseModel):
+    """Event type specification for agent lifecycle and guardrail events."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    id: str = Field(..., description="Unique event type identifier")
+    version: str = Field(default="0.0.1", description="Event spec version")
+    name: str = Field(..., description="Display name")
+    description: str = Field(default="", description="Event type description")
+    kind: str = Field(..., description="Event kind constant")
+    fields: List[EventField] = Field(
+        default_factory=list, description="Event payload fields"
+    )
+
+
+class TriggerField(BaseModel):
+    """Dynamic field definition for a trigger type."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    name: str = Field(..., description="Field key")
+    label: str = Field(..., description="Display label")
+    type: Literal["string", "boolean", "number"] = Field(..., description="Input type")
+    required: bool = Field(default=False, description="Whether field is required")
+    placeholder: Optional[str] = Field(default=None, description="UI placeholder")
+    help: Optional[str] = Field(default=None, description="Help text")
+    font: Optional[str] = Field(default=None, description="Suggested font style")
+
+
+class TriggerSpec(BaseModel):
+    """Trigger type specification."""
+
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    id: str = Field(..., description="Unique trigger identifier")
+    version: str = Field(default="0.0.1", description="Trigger version")
+    name: str = Field(..., description="Display name")
+    description: str = Field(default="", description="Trigger description")
+    type: Literal["once", "schedule", "event"] = Field(
+        ..., description="Trigger execution mode"
+    )
+    fields: List[TriggerField] = Field(
+        default_factory=list, description="Trigger configuration fields"
     )
 
 
@@ -172,6 +622,7 @@ class MCPServer(BaseModel):
     model_config = ConfigDict(populate_by_name=True, by_alias=True)
 
     id: str = Field(..., description="Unique server identifier")
+    version: str = Field(default="0.0.1", description="MCP server version")
     name: str = Field(..., description="Display name for the server")
     description: str = Field(
         default="", description="Description of the server capabilities"
@@ -266,6 +717,7 @@ class AgentSpec(BaseModel):
     model_config = ConfigDict(populate_by_name=True, by_alias=True)
 
     id: str = Field(..., description="Unique agent identifier")
+    version: str = Field(default="0.0.1", description="Agent version")
     name: str = Field(..., description="Display name for the agent")
     description: str = Field(default="", description="Agent description")
     tags: List[str] = Field(default_factory=list, description="Tags for categorization")
@@ -282,6 +734,15 @@ class AgentSpec(BaseModel):
     skills: List[str] = Field(
         default_factory=list,
         description="Skill IDs available to this agent",
+    )
+    tools: List[str] = Field(
+        default_factory=list,
+        description="Tool IDs available to this agent",
+    )
+    frontend_tools: List[str] = Field(
+        default_factory=list,
+        description="Frontend tool IDs available to this agent",
+        alias="frontendTools",
     )
     environment_name: str = Field(
         default="ai-agents-env",
@@ -394,7 +855,184 @@ class AgentSpec(BaseModel):
         default=None,
         description="Notification configuration (email, slack)",
     )
-    team: Optional[Dict[str, Any]] = Field(
+    memory: Optional[str] = Field(
         default=None,
-        description="Team configuration for multi-agent flows",
+        description="Memory backend identifier (e.g., 'ephemeral', 'mem0', 'memu', 'simplemem')",
     )
+
+
+class TeamAgentSpec(BaseModel):
+    """Specification for an agent within a team."""
+
+    id: str = Field(..., description="Agent identifier within the team")
+    name: str = Field(..., description="Display name for the team agent")
+    role: str = Field(
+        default="",
+        description="Role within the team (e.g., 'Primary · Initiator', 'Secondary', 'Final')",
+    )
+    goal: str = Field(default="", description="Goal or objective for this agent")
+    model: str = Field(default="", description="AI model identifier")
+    mcp_server: str = Field(
+        default="", description="MCP server used by this agent", alias="mcpServer"
+    )
+    tools: list[str] = Field(
+        default_factory=list, description="Tools available to this agent"
+    )
+    trigger: str = Field(default="", description="Trigger condition for this agent")
+    approval: str = Field(
+        default="auto", description="Approval policy: 'auto' or 'manual'"
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+class TeamSupervisorSpec(BaseModel):
+    """Specification for a team supervisor agent."""
+
+    name: str = Field(..., description="Supervisor agent name")
+    model: str = Field(default="", description="AI model used by the supervisor")
+
+
+class TeamValidationSpec(BaseModel):
+    """Validation settings for a team."""
+
+    timeout: Optional[str] = Field(
+        default=None, description="Maximum execution time (e.g., '300s')"
+    )
+    retry_on_failure: bool = Field(
+        default=False, description="Whether to retry on failure", alias="retryOnFailure"
+    )
+    max_retries: int = Field(
+        default=0, description="Maximum number of retries", alias="maxRetries"
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+class TeamReactionRule(BaseModel):
+    """A reaction rule for automated team responses."""
+
+    id: str = Field(..., description="Unique reaction rule identifier")
+    trigger: str = Field(..., description="Event or condition that triggers this rule")
+    action: str = Field(..., description="Action to take when triggered")
+    auto: bool = Field(
+        default=True, description="Whether the rule executes automatically"
+    )
+    max_retries: int = Field(
+        default=1, description="Maximum retry attempts", alias="maxRetries"
+    )
+    escalate_after_retries: int = Field(
+        default=1,
+        description="Escalate after this many retries",
+        alias="escalateAfterRetries",
+    )
+    priority: str = Field(
+        default="medium",
+        description="Priority level: 'low', 'medium', 'high', 'critical'",
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+class TeamHealthMonitoring(BaseModel):
+    """Health monitoring configuration for a team."""
+
+    heartbeat_interval: str = Field(
+        default="30s",
+        description="Interval between heartbeat checks",
+        alias="heartbeatInterval",
+    )
+    stale_threshold: str = Field(
+        default="120s",
+        description="Time before an agent is considered stale",
+        alias="staleThreshold",
+    )
+    unresponsive_threshold: str = Field(
+        default="300s",
+        description="Time before an agent is considered unresponsive",
+        alias="unresponsiveThreshold",
+    )
+    stuck_threshold: str = Field(
+        default="600s",
+        description="Time before an agent is considered stuck",
+        alias="stuckThreshold",
+    )
+    max_restart_attempts: int = Field(
+        default=3,
+        description="Maximum restart attempts for unhealthy agents",
+        alias="maxRestartAttempts",
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+class TeamOutputSpec(BaseModel):
+    """Output configuration for a team."""
+
+    formats: list[str] = Field(
+        default_factory=list, description="Output formats (e.g., 'pdf', 'csv', 'json')"
+    )
+    template: str = Field(default="", description="Report template name")
+    storage: str = Field(default="", description="Storage location (e.g., S3 path)")
+
+
+class TeamSpec(BaseModel):
+    """Specification for a multi-agent team."""
+
+    id: str = Field(..., description="Unique team identifier")
+    version: str = Field(default="0.0.1", description="Team spec version")
+    name: str = Field(..., description="Display name for the team")
+    description: str = Field(default="", description="Team description")
+    tags: list[str] = Field(default_factory=list, description="Classification tags")
+    enabled: bool = Field(default=False, description="Whether the team is enabled")
+    icon: str = Field(default="people", description="Icon identifier")
+    emoji: str = Field(default="👥", description="Emoji representation")
+    color: str = Field(default="#8250df", description="Theme color (hex)")
+    agent_spec_id: str = Field(
+        ...,
+        description="ID of the associated agent spec",
+        alias="agentSpecId",
+    )
+    orchestration_protocol: str = Field(
+        default="datalayer",
+        description="Orchestration protocol (e.g., 'datalayer')",
+        alias="orchestrationProtocol",
+    )
+    execution_mode: str = Field(
+        default="sequential",
+        description="Execution mode: 'sequential' or 'parallel'",
+        alias="executionMode",
+    )
+    supervisor: Optional[TeamSupervisorSpec] = Field(
+        default=None,
+        description="Supervisor agent configuration",
+    )
+    routing_instructions: str = Field(
+        default="",
+        description="Instructions for routing tasks between agents",
+        alias="routingInstructions",
+    )
+    validation: Optional[TeamValidationSpec] = Field(
+        default=None,
+        description="Validation settings for the team",
+    )
+    agents: list[TeamAgentSpec] = Field(
+        default_factory=list,
+        description="List of agents in the team",
+    )
+    reaction_rules: list[TeamReactionRule] = Field(
+        default_factory=list,
+        description="Automated reaction rules",
+        alias="reactionRules",
+    )
+    health_monitoring: Optional[TeamHealthMonitoring] = Field(
+        default=None,
+        description="Health monitoring configuration",
+        alias="healthMonitoring",
+    )
+    output: Optional[TeamOutputSpec] = Field(
+        default=None,
+        description="Output configuration",
+    )
+
+    model_config = {"populate_by_name": True}

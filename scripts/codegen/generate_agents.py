@@ -15,6 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import yaml
+from versioning import (
+    ensure_spec_version,
+    split_spec_ref,
+    version_suffix,
+    versioned_ref,
+)
 
 
 def _fmt_list(items: list[str]) -> str:
@@ -52,6 +58,7 @@ def load_yaml_specs(specs_dir: Path) -> List[tuple[str, Dict[str, Any]]]:
         with open(yaml_file, "r") as f:
             spec = yaml.safe_load(f)
             if spec:  # Skip empty files
+                ensure_spec_version(spec)
                 specs.append(("", spec))
 
     # Then, load specs from subdirectories (one level deep)
@@ -61,6 +68,7 @@ def load_yaml_specs(specs_dir: Path) -> List[tuple[str, Dict[str, Any]]]:
                 with open(yaml_file, "r") as f:
                     spec = yaml.safe_load(f)
                     if spec:  # Skip empty files
+                        ensure_spec_version(spec)
                         specs.append((subdir.name, spec))
 
     return specs
@@ -116,6 +124,7 @@ from agent_runtimes.types import AgentSpec
 
         for spec in folder_specs:
             agent_id = spec["id"]
+            version = spec["version"]
             # Prefix agent ID with folder name for uniqueness
             full_agent_id = f"{folder}/{agent_id}" if folder else agent_id
             # Create constant name: e.g., "data-acquisition" -> "DATA_ACQUISITION_AGENT_SPEC"
@@ -127,13 +136,28 @@ from agent_runtimes.types import AgentSpec
                 const_name = base_name + "_SPEC"
             else:
                 const_name = base_name + "_AGENT_SPEC"
+            const_name += version_suffix(version)
             agent_ids.append((full_agent_id, const_name, folder))
 
             # Get MCP servers
-            mcp_server_ids = spec.get("mcp_servers", [])
+            mcp_server_refs = [
+                split_spec_ref(sid)[0] for sid in spec.get("mcp_servers", [])
+            ]
             mcp_servers_str = ", ".join(
-                f'MCP_SERVER_CATALOG["{sid}"]' for sid in mcp_server_ids
+                f'MCP_SERVER_CATALOG["{sid}"]' for sid in mcp_server_refs
             )
+
+            skill_refs = [
+                versioned_ref(*split_spec_ref(skill))
+                for skill in spec.get("skills", [])
+            ]
+            tool_refs = [
+                versioned_ref(*split_spec_ref(tool)) for tool in spec.get("tools", [])
+            ]
+            frontend_tool_refs = [
+                versioned_ref(*split_spec_ref(ft))
+                for ft in spec.get("frontend_tools", [])
+            ]
 
             # Format optional fields
             icon = f'"{spec.get("icon")}"' if spec.get("icon") else "None"
@@ -168,7 +192,11 @@ from agent_runtimes.types import AgentSpec
 
             # Clean description for Python (single line)
             description = (
-                spec["description"].replace("\n", " ").replace("  ", " ").strip()
+                spec["description"]
+                .replace("\n", " ")
+                .replace("  ", " ")
+                .strip()
+                .replace('"', '\\"')
             )
 
             # Use triple quotes for multiline system prompts
@@ -209,17 +237,21 @@ from agent_runtimes.types import AgentSpec
             auth_policy = spec.get("authorization_policy")
             auth_policy_str = f'"{auth_policy}"' if auth_policy is not None else "None"
             notifs = spec.get("notifications")
-            team_val = spec.get("team")
+            memory_val = spec.get("memory")
+            memory_str = f'"{memory_val}"' if memory_val else "None"
 
             code += f'''{const_name} = AgentSpec(
     id="{full_agent_id}",
+    version="{version}",
     name="{spec["name"]}",
     description="{description}",
     tags={_fmt_list(spec.get("tags", []))},
     enabled={spec.get("enabled", True)},
     model={model_str},
     mcp_servers=[{mcp_servers_str}],
-    skills={_fmt_list(spec.get("skills", []))},
+    skills={_fmt_list(skill_refs)},
+    tools={_fmt_list(tool_refs)},
+    frontend_tools={_fmt_list(frontend_tool_refs)},
     environment_name="{spec.get("environment_name", "ai-agents-env")}",
     icon={icon},
     emoji={emoji},
@@ -244,7 +276,7 @@ from agent_runtimes.types import AgentSpec
     advanced={_fmt_py_literal(advanced_val)},
     authorization_policy={auth_policy_str},
     notifications={_fmt_py_literal(notifs)},
-    team={_fmt_py_literal(team_val)},
+    memory={memory_str},
 )
 
 '''
@@ -273,7 +305,7 @@ AGENT_SPECS: Dict[str, AgentSpec] = {
 
 def get_agent_spec(agent_id: str) -> AgentSpec | None:
     \"\"\"
-    Get an agent specification by ID.
+    Get an agent specification by ID (accepts both bare and versioned refs).
 
     Args:
         agent_id: The unique identifier of the agent.
@@ -281,7 +313,13 @@ def get_agent_spec(agent_id: str) -> AgentSpec | None:
     Returns:
         The AgentSpec configuration, or None if not found.
     \"\"\"
-    return AGENT_SPECS.get(agent_id)
+    spec = AGENT_SPECS.get(agent_id)
+    if spec is not None:
+        return spec
+    base, _, ver = agent_id.rpartition(':')
+    if base and '.' in ver:
+        return AGENT_SPECS.get(base)
+    return None
 
 
 def list_agent_specs(prefix: str | None = None) -> list[AgentSpec]:
@@ -304,7 +342,10 @@ def list_agent_specs(prefix: str | None = None) -> list[AgentSpec]:
 
 
 def generate_typescript_code(
-    specs: List[tuple[str, Dict[str, Any]]], mcp_specs_dir: str, skills_specs_dir: str
+    specs: List[tuple[str, Dict[str, Any]]],
+    mcp_specs_dir: str,
+    skills_specs_dir: str,
+    tools_specs_dir: str,
 ) -> str:
     """Generate TypeScript code from agent specifications."""
     # Load available MCP servers from specs
@@ -312,46 +353,138 @@ def generate_typescript_code(
     import os
 
     mcp_server_files = glob.glob(os.path.join(mcp_specs_dir, "*.yaml"))
-    mcp_server_ids = [
-        os.path.basename(f).replace(".yaml", "") for f in mcp_server_files
-    ]
-    mcp_server_ids.sort()
+    mcp_specs = []
+    for fpath in mcp_server_files:
+        with open(fpath, "r") as f:
+            spec = yaml.safe_load(f)
+            ensure_spec_version(spec)
+            mcp_specs.append(spec)
+    mcp_specs.sort(key=lambda s: s["id"])
 
     # Load available skills from specs
     skill_files = glob.glob(os.path.join(skills_specs_dir, "*.yaml"))
-    skill_ids = [os.path.basename(f).replace(".yaml", "") for f in skill_files]
-    skill_ids.sort()
+    skill_specs = []
+    for fpath in skill_files:
+        with open(fpath, "r") as f:
+            spec = yaml.safe_load(f)
+            ensure_spec_version(spec)
+            skill_specs.append(spec)
+    skill_specs.sort(key=lambda s: s["id"])
+
+    # Load available tools from specs
+    tool_files = glob.glob(os.path.join(tools_specs_dir, "*.yaml"))
+    tool_specs = []
+    for fpath in tool_files:
+        with open(fpath, "r") as f:
+            spec = yaml.safe_load(f)
+            ensure_spec_version(spec)
+            tool_specs.append(spec)
+    tool_specs.sort(key=lambda s: s["id"])
 
     # Determine which MCP servers and skills are actually used in these specs
     used_mcp_servers = set()
     used_skills = set()
+    used_tools = set()
+    used_frontend_tools = set()
     for _, spec in specs:
         for server in spec.get("mcp_servers", []):
-            used_mcp_servers.add(server)
+            used_mcp_servers.add(versioned_ref(*split_spec_ref(server)))
         for skill in spec.get("skills", []):
-            used_skills.add(skill)
+            used_skills.add(versioned_ref(*split_spec_ref(skill)))
+        for tool in spec.get("tools", []):
+            used_tools.add(versioned_ref(*split_spec_ref(tool)))
+        for ft in spec.get("frontend_tools", []):
+            used_frontend_tools.add(versioned_ref(*split_spec_ref(ft)))
 
     # Only import what's actually used
     mcp_imports = []
     mcp_map_entries = []
-    for server_id in mcp_server_ids:
-        if server_id in used_mcp_servers:
-            const_name = server_id.upper().replace("-", "_") + "_MCP_SERVER"
+    for spec in mcp_specs:
+        server_id = spec["id"]
+        server_ref = versioned_ref(server_id, spec["version"])
+        if server_ref in used_mcp_servers:
+            const_name = (
+                server_id.upper().replace("-", "_")
+                + "_MCP_SERVER"
+                + version_suffix(spec["version"])
+            )
             mcp_imports.append(const_name)
+            mcp_map_entries.append(f"  '{server_ref}': {const_name},")
             mcp_map_entries.append(f"  '{server_id}': {const_name},")
 
     # Generate skill import names and map entries
     skill_imports = []
     skill_map_entries = []
-    for sid in skill_ids:
-        if sid in used_skills:
-            const_name = sid.upper().replace("-", "_") + "_SKILL_SPEC"
+    for spec in skill_specs:
+        sid = spec["id"]
+        sref = versioned_ref(sid, spec["version"])
+        if sref in used_skills:
+            const_name = (
+                sid.upper().replace("-", "_")
+                + "_SKILL_SPEC"
+                + version_suffix(spec["version"])
+            )
             skill_imports.append(const_name)
+            skill_map_entries.append(f"  '{sref}': {const_name},")
             skill_map_entries.append(f"  '{sid}': {const_name},")
+
+    # Generate tool import names and map entries
+    tool_imports = []
+    tool_map_entries = []
+    for spec in tool_specs:
+        tid = spec["id"]
+        tref = versioned_ref(tid, spec["version"])
+        if tref in used_tools:
+            const_name = (
+                tid.upper().replace("-", "_")
+                + "_TOOL_SPEC"
+                + version_suffix(spec["version"])
+            )
+            tool_imports.append(const_name)
+            tool_map_entries.append(f"  '{tref}': {const_name},")
+            tool_map_entries.append(f"  '{tid}': {const_name},")
+
+    # Generate frontend tool import names and map entries
+    frontend_tool_imports = []
+    frontend_tool_map_entries = []
+    frontend_tools_specs_dir = Path(tools_specs_dir).parent / "frontend-tools"
+    frontend_tool_specs = []
+    if frontend_tools_specs_dir.exists():
+        frontend_tool_files = sorted(frontend_tools_specs_dir.glob("*.yaml"))
+        for fpath in frontend_tool_files:
+            with open(fpath, "r") as f:
+                ft_spec = yaml.safe_load(f)
+                ensure_spec_version(ft_spec)
+                frontend_tool_specs.append(ft_spec)
+        for ft_spec in frontend_tool_specs:
+            ftid = ft_spec["id"]
+            ftref = versioned_ref(ftid, ft_spec["version"])
+            if ftref in used_frontend_tools:
+                const_name = (
+                    ftid.upper().replace("-", "_")
+                    + "_FRONTEND_TOOL_SPEC"
+                    + version_suffix(ft_spec["version"])
+                )
+                frontend_tool_imports.append(const_name)
+                frontend_tool_map_entries.append(f"  '{ftref}': {const_name},")
+                frontend_tool_map_entries.append(f"  '{ftid}': {const_name},")
 
     # Determine if we need any helper code
     has_mcp = len(mcp_imports) > 0
     has_skills = len(skill_imports) > 0
+    has_tools = len(tool_imports) > 0
+    has_frontend_tools = len(frontend_tool_imports) > 0
+
+    # Root-level specs produce src/specs/agents/agents.ts, while nested specs
+    # produce src/specs/agents/<folder>/agents.ts. Import paths differ.
+    is_root_layout = all(folder == "" for folder, _ in specs)
+    types_import_path = "../../types" if is_root_layout else "../../../types"
+    mcp_import_path = "../mcpServers" if is_root_layout else "../../mcpServers"
+    skills_import_path = "../skills" if is_root_layout else "../../skills"
+    tools_import_path = "../tools" if is_root_layout else "../../tools"
+    frontend_tools_import_path = (
+        "../frontendTools" if is_root_layout else "../../frontendTools"
+    )
 
     # Header
     code = """/*
@@ -367,21 +500,45 @@ def generate_typescript_code(
  * Generated from YAML specifications in specs/agents/
  */
 
-import type { AgentSpec } from '../../../types/Types';
+import type { AgentSpec } from '"""
+    code += types_import_path
+    code += """';
 """
 
     # Only add MCP server imports if needed
     if has_mcp:
         code += "import {\n"
         code += "  " + ",\n  ".join(mcp_imports) + ",\n"
-        code += "} from '../../mcpServers';\n"
+        code += "} from '"
+        code += mcp_import_path
+        code += "';\n"
 
     # Only add skill imports if needed
     if has_skills:
         code += "import {\n"
         code += "  " + ",\n  ".join(skill_imports) + ",\n"
-        code += "} from '../../skills';\n"
-        code += "import type { SkillSpec } from '../../skills';\n"
+        code += "} from '"
+        code += skills_import_path
+        code += "';\n"
+        code += "import type { SkillSpec } from '"
+        code += types_import_path
+        code += "';\n"
+
+    # Only add tool imports if needed
+    if has_tools:
+        code += "import {\n"
+        code += "  " + ",\n  ".join(tool_imports) + ",\n"
+        code += "} from '"
+        code += tools_import_path
+        code += "';\n"
+
+    # Only add frontend tool imports if needed
+    if has_frontend_tools:
+        code += "import {\n"
+        code += "  " + ",\n  ".join(frontend_tool_imports) + ",\n"
+        code += "} from '"
+        code += frontend_tools_import_path
+        code += "';\n"
 
     # Only add MCP server lookup if used
     if has_mcp:
@@ -411,13 +568,35 @@ function toAgentSkillSpec(skill: SkillSpec) {
     id: skill.id,
     name: skill.name,
     description: skill.description,
-    version: '1.0.0',
+        version: skill.version ?? '0.0.1',
     tags: skill.tags,
     enabled: skill.enabled,
     requiredEnvVars: skill.requiredEnvVars,
   };
 }
 """
+
+    # Only add tool lookup if used
+    if has_tools:
+        code += """
+/**
+ * Map tool IDs to ToolSpec objects.
+ */
+const TOOL_MAP: Record<string, any> = {
+"""
+        code += "\n".join(tool_map_entries) + "\n"
+        code += "};\n"
+
+    # Only add frontend tool lookup if used
+    if has_frontend_tools:
+        code += """
+/**
+ * Map frontend tool IDs to FrontendToolSpec objects.
+ */
+const FRONTEND_TOOL_MAP: Record<string, any> = {
+"""
+        code += "\n".join(frontend_tool_map_entries) + "\n"
+        code += "};\n"
 
     code += """
 // ============================================================================
@@ -451,6 +630,7 @@ function toAgentSkillSpec(skill: SkillSpec) {
 
         for spec in folder_specs:
             agent_id = spec["id"]
+            version = spec["version"]
             # Prefix agent ID with folder name for uniqueness
             full_agent_id = f"{folder}/{agent_id}" if folder else agent_id
             # Create constant name: e.g., "data-acquisition" -> "DATA_ACQUISITION_AGENT_SPEC"
@@ -462,10 +642,14 @@ function toAgentSkillSpec(skill: SkillSpec) {
                 const_name = base_name + "_SPEC"
             else:
                 const_name = base_name + "_AGENT_SPEC"
+            const_name += version_suffix(version)
             agent_ids.append((full_agent_id, const_name, folder))
 
             # Get MCP servers
-            mcp_server_ids = spec.get("mcp_servers", [])
+            mcp_server_ids = [
+                versioned_ref(*split_spec_ref(sid))
+                for sid in spec.get("mcp_servers", [])
+            ]
             if has_mcp and mcp_server_ids:
                 mcp_servers_str = ", ".join(
                     f"MCP_SERVER_MAP['{sid}']" for sid in mcp_server_ids
@@ -474,13 +658,36 @@ function toAgentSkillSpec(skill: SkillSpec) {
                 mcp_servers_str = ""
 
             # Get skills - resolve to AgentSkillSpec via toAgentSkillSpec
-            skill_ids_list = spec.get("skills", [])
+            skill_ids_list = [
+                versioned_ref(*split_spec_ref(sid)) for sid in spec.get("skills", [])
+            ]
             if has_skills and skill_ids_list:
                 skills_str = ", ".join(
                     f"toAgentSkillSpec(SKILL_MAP['{sid}'])" for sid in skill_ids_list
                 )
             else:
                 skills_str = ""
+
+            # Get tools - resolve to ToolSpec via TOOL_MAP
+            tool_ids_list = [
+                versioned_ref(*split_spec_ref(sid)) for sid in spec.get("tools", [])
+            ]
+            if has_tools and tool_ids_list:
+                tools_str = ", ".join(f"TOOL_MAP['{tid}']" for tid in tool_ids_list)
+            else:
+                tools_str = ""
+
+            # Get frontend tools - resolve to FrontendToolSpec via FRONTEND_TOOL_MAP
+            frontend_tool_ids_list = [
+                versioned_ref(*split_spec_ref(sid))
+                for sid in spec.get("frontend_tools", [])
+            ]
+            if has_frontend_tools and frontend_tool_ids_list:
+                frontend_tools_str = ", ".join(
+                    f"FRONTEND_TOOL_MAP['{ftid}']" for ftid in frontend_tool_ids_list
+                )
+            else:
+                frontend_tools_str = ""
 
             # Format tags and suggestions as arrays
             tags = spec.get("tags", [])
@@ -511,6 +718,10 @@ function toAgentSkillSpec(skill: SkillSpec) {
                 system_prompt_codemode_addons = system_prompt_codemode_addons.replace(
                     "`", "\\`"
                 )
+
+            welcome_message = spec.get("welcome_message")
+            welcome_notebook = spec.get("welcome_notebook")
+            welcome_document = spec.get("welcome_document")
 
             # Clean description for TypeScript (multi-line template literal)
             description = (
@@ -551,10 +762,12 @@ function toAgentSkillSpec(skill: SkillSpec) {
                 f"'{auth_policy}'" if auth_policy is not None else "undefined"
             )
             notifs = spec.get("notifications")
-            team_val = spec.get("team")
+            memory_val = spec.get("memory")
+            memory_ts = f"'{memory_val}'" if memory_val else "undefined"
 
             code += f"""export const {const_name}: AgentSpec = {{
   id: '{full_agent_id}',
+    version: '{version}',
   name: '{spec["name"]}',
   description: `{description}`,
   tags: {tags_str},
@@ -562,11 +775,16 @@ function toAgentSkillSpec(skill: SkillSpec) {
   model: {model_ts},
   mcpServers: [{mcp_servers_str}],
   skills: [{skills_str}],
+    tools: [{tools_str}],
+    frontendTools: [{frontend_tools_str}],
   environmentName: '{spec.get("environment_name", "ai-agents-env")}',
   icon: {icon},
   emoji: {emoji},
   color: {color},
   suggestions: {suggestions_str},
+    welcomeMessage: {_fmt_ts_literal(welcome_message)},
+    welcomeNotebook: {_fmt_ts_literal(welcome_notebook)},
+    welcomeDocument: {_fmt_ts_literal(welcome_document)},
   sandboxVariant: {sandbox_variant_ts},
   systemPrompt: {f"`{system_prompt}`" if system_prompt else "undefined"},
   systemPromptCodemodeAddons: {f"`{system_prompt_codemode_addons}`" if system_prompt_codemode_addons else "undefined"},
@@ -583,7 +801,7 @@ function toAgentSkillSpec(skill: SkillSpec) {
   advanced: {_fmt_ts_literal(advanced_val)},
   authorizationPolicy: {auth_policy_ts},
   notifications: {_fmt_ts_literal(notifs)},
-  team: {_fmt_ts_literal(team_val)},
+  memory: {memory_ts},
 }};
 
 """
@@ -608,11 +826,21 @@ export const AGENT_SPECS: Record<string, AgentSpec> = {
 
     code += """};
 
+function resolveAgentId(agentId: string): string {
+  if (agentId in AGENT_SPECS) return agentId;
+  const idx = agentId.lastIndexOf(':');
+  if (idx > 0) {
+    const base = agentId.slice(0, idx);
+    if (base in AGENT_SPECS) return base;
+  }
+  return agentId;
+}
+
 /**
  * Get an agent specification by ID.
  */
 export function getAgentSpecs(agentId: string): AgentSpec | undefined {
-  return AGENT_SPECS[agentId];
+  return AGENT_SPECS[resolveAgentId(agentId)];
 }
 
 /**
@@ -633,14 +861,15 @@ export function listAgentSpecs(prefix?: string): AgentSpec[] {
  */
 export function getAgentSpecRequiredEnvVars(spec: AgentSpec): string[] {
   const vars = new Set<string>();
+    const baseEnvVar = (v: string): string => v.split(':')[0] ?? v;
   for (const server of spec.mcpServers) {
     for (const v of server.requiredEnvVars ?? []) {
-      vars.add(v);
+            vars.add(baseEnvVar(v));
     }
   }
   for (const skill of spec.skills) {
     for (const v of skill.requiredEnvVars ?? []) {
-      vars.add(v);
+            vars.add(baseEnvVar(v));
     }
   }
   return Array.from(vars);
@@ -711,10 +940,13 @@ def generate_subfolder_structure(specs: List[tuple[str, Dict[str, Any]]], args):
     # Get MCP and skills specs directories
     mcp_specs_dir = args.specs_dir.parent / "mcp-servers"
     skills_specs_dir = args.specs_dir.parent / "skills"
+    tools_specs_dir = args.specs_dir.parent / "tools"
 
     # Determine base directories
     python_base = args.python_output.parent / "agents"
     typescript_base = args.typescript_output.parent / "agents"
+    python_base.mkdir(parents=True, exist_ok=True)
+    typescript_base.mkdir(parents=True, exist_ok=True)
 
     print(f"Generating subfolder structure in {python_base} and {typescript_base}...")
 
@@ -723,18 +955,22 @@ def generate_subfolder_structure(specs: List[tuple[str, Dict[str, Any]]], args):
     all_typescript_imports = []
 
     for folder, folder_specs in sorted(specs_by_folder.items()):
-        if not folder:  # Skip root level for now
-            continue
-
-        print(f"  Generating agents for subfolder: {folder}")
+        is_root = not folder
+        if is_root:
+            print("  Generating agents for root level")
+        else:
+            print(f"  Generating agents for subfolder: {folder}")
 
         # Convert folder name to valid Python module name (replace hyphens with underscores)
-        folder_python_name = folder.replace("-", "_")
+        folder_python_name = folder.replace("-", "_") if folder else "agents"
 
-        # Create Python subfolder file
-        python_folder_dir = python_base / folder_python_name
-        python_folder_dir.mkdir(parents=True, exist_ok=True)
-        python_file = python_folder_dir / "agents.py"
+        # Create Python output file
+        if is_root:
+            python_file = python_base / "agents.py"
+        else:
+            python_folder_dir = python_base / folder_python_name
+            python_folder_dir.mkdir(parents=True, exist_ok=True)
+            python_file = python_folder_dir / "agents.py"
 
         # Generate Python code for this folder
         python_code = generate_python_code([(folder, spec) for spec in folder_specs])
@@ -742,9 +978,10 @@ def generate_subfolder_structure(specs: List[tuple[str, Dict[str, Any]]], args):
             f.write(python_code)
 
         # Create __init__.py for Python subfolder
-        python_init = python_folder_dir / "__init__.py"
-        with open(python_init, "w") as f:
-            f.write("""# Copyright (c) 2025-2026 Datalayer, Inc.
+        if not is_root:
+            python_init = python_folder_dir / "__init__.py"
+            with open(python_init, "w") as f:
+                f.write("""# Copyright (c) 2025-2026 Datalayer, Inc.
 # Distributed under the terms of the Modified BSD License.
 
 from .agents import *
@@ -753,28 +990,36 @@ __all__ = ["AGENT_SPECS", "get_agent_spec", "list_agent_specs"]
 """)
 
         # Collect imports for main index
-        all_python_imports.append(
-            f"from .{folder_python_name} import AGENT_SPECS as {folder_python_name.upper()}_AGENTS"
-        )
+        if is_root:
+            all_python_imports.append("from .agents import AGENT_SPECS as ROOT_AGENTS")
+        else:
+            all_python_imports.append(
+                f"from .{folder_python_name} import AGENT_SPECS as {folder_python_name.upper()}_AGENTS"
+            )
 
-        # Create TypeScript subfolder file
-        typescript_folder_dir = typescript_base / folder
-        typescript_folder_dir.mkdir(parents=True, exist_ok=True)
-        typescript_file = typescript_folder_dir / "agents.ts"
+        # Create TypeScript output file
+        if is_root:
+            typescript_file = typescript_base / "agents.ts"
+        else:
+            typescript_folder_dir = typescript_base / folder
+            typescript_folder_dir.mkdir(parents=True, exist_ok=True)
+            typescript_file = typescript_folder_dir / "agents.ts"
 
         # Generate TypeScript code for this folder
         typescript_code = generate_typescript_code(
             [(folder, spec) for spec in folder_specs],
             str(mcp_specs_dir),
             str(skills_specs_dir),
+            str(tools_specs_dir),
         )
         with open(typescript_file, "w") as f:
             f.write(typescript_code)
 
         # Create index.ts for TypeScript subfolder
-        typescript_index = typescript_folder_dir / "index.ts"
-        with open(typescript_index, "w") as f:
-            f.write("""/*
+        if not is_root:
+            typescript_index = typescript_folder_dir / "index.ts"
+            with open(typescript_index, "w") as f:
+                f.write("""/*
  * Copyright (c) 2025-2026 Datalayer, Inc.
  * Distributed under the terms of the Modified BSD License.
  */
@@ -783,7 +1028,10 @@ export * from './agents';
 """)
 
         # Collect imports for main index
-        all_typescript_imports.append(f"export * from './{folder}';")
+        if is_root:
+            all_typescript_imports.append("export * from './agents';")
+        else:
+            all_typescript_imports.append(f"export * from './{folder}';")
 
     # Create main Python index file
     python_index = python_base / "__init__.py"
@@ -817,12 +1065,20 @@ AGENT_SPECS: Dict[str, AgentSpec] = {}
             python_index_content += (
                 f"AGENT_SPECS.update({folder_python_name.upper()}_AGENTS)\n"
             )
+        else:
+            python_index_content += "AGENT_SPECS.update(ROOT_AGENTS)\n"
 
     python_index_content += """
 
 def get_agent_spec(agent_id: str) -> AgentSpec | None:
     \"\"\"Get an agent specification by ID.\"\"\"
-    return AGENT_SPECS.get(agent_id)
+    spec = AGENT_SPECS.get(agent_id)
+    if spec is not None:
+        return spec
+    base, _, ver = agent_id.rpartition(':')
+    if base and '.' in ver:
+        return AGENT_SPECS.get(base)
+    return None
 
 
 def list_agent_specs(prefix: str | None = None) -> list[AgentSpec]:
@@ -864,6 +1120,10 @@ import type { AgentSpec } from '../../types';
         if folder:
             folder_const = folder.replace("-", "_").upper()
             typescript_index_content += f"import {{ AGENT_SPECS as {folder_const}_AGENTS }} from './{folder}';\n"
+        else:
+            typescript_index_content += (
+                "import { AGENT_SPECS as ROOT_AGENTS } from './agents';\n"
+            )
 
     typescript_index_content += """
 // Merge all agent specs from subfolders
@@ -874,14 +1134,26 @@ export const AGENT_SPECS: Record<string, AgentSpec> = {
         if folder:
             folder_const = folder.replace("-", "_").upper()
             typescript_index_content += f"  ...{folder_const}_AGENTS,\n"
+        else:
+            typescript_index_content += "  ...ROOT_AGENTS,\n"
 
     typescript_index_content += """};
+
+function resolveAgentId(agentId: string): string {
+  if (agentId in AGENT_SPECS) return agentId;
+  const idx = agentId.lastIndexOf(':');
+  if (idx > 0) {
+    const base = agentId.slice(0, idx);
+    if (base in AGENT_SPECS) return base;
+  }
+  return agentId;
+}
 
 /**
  * Get an agent specification by ID.
  */
 export function getAgentSpecs(agentId: string): AgentSpec | undefined {
-  return AGENT_SPECS[agentId];
+  return AGENT_SPECS[resolveAgentId(agentId)];
 }
 
 /**
@@ -917,6 +1189,43 @@ export function getAgentSpecRequiredEnvVars(spec: AgentSpec): string[] {
         f.write(typescript_index_content)
 
     print(f"✓ Generated {len(specs_by_folder)} subfolder(s)")
+
+
+def ensure_specs_barrel(specs_dir: Path) -> None:
+    """Ensure top-level TypeScript specs barrel file exists.
+
+    This keeps imports like ``from './specs'`` valid even when regenerating
+    from an empty ``src/specs`` tree.
+    """
+    specs_dir.mkdir(parents=True, exist_ok=True)
+    index_path = specs_dir / "index.ts"
+    index_path.write_text(
+        """/*
+ * Copyright (c) 2025-2026 Datalayer, Inc.
+ * Distributed under the terms of the Modified BSD License.
+ */
+
+/**
+ * Specs exports.
+ *
+ * This file is AUTO-GENERATED. DO NOT EDIT MANUALLY.
+ */
+
+export * from './agents';
+export * from './teams';
+export * from './envvars';
+export * from './evals';
+export * from './guardrails';
+export * from './mcpServers';
+export * from './memory';
+export * from './models';
+export * from './notifications';
+export * from './outputs';
+export * from './skills';
+export * from './tools';
+export * from './triggers';
+"""
+    )
 
 
 def main():
@@ -963,6 +1272,7 @@ def main():
     if args.subfolder_structure:
         # Generate separate files per subfolder
         generate_subfolder_structure(specs, args)
+        ensure_specs_barrel(args.typescript_output.parent)
     else:
         # Generate Python code (single file)
         print(f"Generating Python code to {args.python_output}...")
@@ -976,12 +1286,18 @@ def main():
         # Get MCP and skills specs directories (siblings to agents directory)
         mcp_specs_dir = args.specs_dir.parent / "mcp-servers"
         skills_specs_dir = args.specs_dir.parent / "skills"
+        tools_specs_dir = args.specs_dir.parent / "tools"
         typescript_code = generate_typescript_code(
-            specs, str(mcp_specs_dir), str(skills_specs_dir)
+            specs,
+            str(mcp_specs_dir),
+            str(skills_specs_dir),
+            str(tools_specs_dir),
         )
         args.typescript_output.parent.mkdir(parents=True, exist_ok=True)
         with open(args.typescript_output, "w") as f:
             f.write(typescript_code)
+
+        ensure_specs_barrel(args.typescript_output.parent)
 
         # Update __init__.py with new agent spec constants
         init_file_path = args.python_output.parent / "__init__.py"

@@ -20,24 +20,30 @@ import { INotebookContent } from '@jupyterlab/nbformat';
 import { ServiceManager } from '@jupyterlab/services';
 import {
   DatalayerThemeProvider,
+  DatalayerLogo,
+  getLogoColors,
   themeConfigs,
-  themeVariants,
-  type ColorMode,
+  Box,
 } from '@datalayer/primer-addons';
-import { SegmentedControl } from '@primer/react';
-import { Box } from '@datalayer/primer-addons';
-import { MoonIcon, SunIcon, DeviceDesktopIcon } from '@primer/octicons-react';
+import { AppearanceControlsWithStore } from '@datalayer/primer-addons/lib/components/appearance';
 import {
   coreStore,
   iamStore,
   createDatalayerServiceManager,
 } from '@datalayer/core';
-import { useChatStore } from '../components/chat/store';
+import { useChatStore } from '../stores';
 import { OAuthCallback } from '../identity';
 import { EXAMPLES } from './example-selector';
-import { useExampleThemeStore } from './stores/themeStore';
+import { useExampleThemeStore } from './utils/themeStore';
+import { ExampleWrapper } from './components/ExampleWrapper';
 
-import nbformatExample from './stores/notebooks/NotebookExample1.ipynb.json';
+import nbformatExample from './utils/notebooks/NotebookExample1.ipynb.json';
+
+declare global {
+  interface Window {
+    __agentRuntimesExamplesRoot?: ReturnType<typeof createRoot>;
+  }
+}
 
 // Load configurations from DOM
 const loadConfigurations = () => {
@@ -54,7 +60,7 @@ const loadConfigurations = () => {
         !datalayerConfig.token ||
         datalayerConfig.token.startsWith('%VITE_')
       ) {
-        const envToken = import.meta.env.VITE_DATALAYER_API_TOKEN;
+        const envToken = import.meta.env.VITE_DATALAYER_API_KEY;
         if (envToken) {
           datalayerConfig.token = envToken;
         }
@@ -149,7 +155,7 @@ const getDefaultExampleName = (): string => {
   if (stored && EXAMPLES[stored]) {
     return stored;
   }
-  return 'DatalayerNotebookExample';
+  return 'NotebookExample';
 };
 
 // Notebook-only component for iframe display - renders ONLY the notebook without any UI chrome
@@ -464,6 +470,7 @@ const ExampleAppThemed: React.FC<{
 }) => {
   const { colorMode, theme: themeVariant } = useExampleThemeStore();
   const cfg = themeConfigs[themeVariant];
+  const logoColors = getLogoColors(themeVariant, colorMode);
 
   return (
     <DatalayerThemeProvider
@@ -493,7 +500,7 @@ const ExampleAppThemed: React.FC<{
             alignItems: 'center',
             justifyContent: 'space-between',
             gap: 3,
-            height: '50px',
+            height: '60px',
             bg: 'canvas.subtle',
             borderBottom: '1px solid',
             borderColor: 'border.default',
@@ -549,75 +556,11 @@ const ExampleAppThemed: React.FC<{
 
           {/* Right: theme picker + color mode + logo */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-            {/* Theme colored circles */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-              {themeVariants.map(variant => {
-                const tcfg = themeConfigs[variant];
-                const isSelected = themeVariant === variant;
-                return (
-                  <Box
-                    as="button"
-                    key={variant}
-                    aria-label={tcfg.label}
-                    aria-pressed={isSelected}
-                    onClick={() =>
-                      useExampleThemeStore.getState().setTheme(variant, false)
-                    }
-                    sx={{
-                      width: 24,
-                      height: 24,
-                      borderRadius: '50%',
-                      backgroundColor: tcfg.brandColor,
-                      border: '2px solid',
-                      borderColor: isSelected ? 'accent.fg' : 'border.default',
-                      cursor: 'pointer',
-                      padding: 0,
-                      outline: 'none',
-                      transition: 'border-color 0.15s ease',
-                      boxShadow: isSelected
-                        ? '0 0 0 2px var(--bgColor-accent-muted, rgba(9,105,218,0.3))'
-                        : 'none',
-                      '&:hover': { borderColor: 'accent.fg' },
-                      '&:focus-visible': {
-                        boxShadow:
-                          '0 0 0 2px var(--bgColor-accent-muted, rgba(9,105,218,0.3))',
-                      },
-                    }}
-                  />
-                );
-              })}
-            </Box>
-
-            {/* Color mode segmented control */}
-            <SegmentedControl
-              aria-label="Color mode"
-              size="small"
-              onChange={(index: number) => {
-                const modes: ColorMode[] = ['light', 'dark', 'auto'];
-                useExampleThemeStore.getState().setColorMode(modes[index]);
-              }}
-            >
-              <SegmentedControl.IconButton
-                selected={colorMode === 'light'}
-                icon={SunIcon}
-                aria-label="Light"
-              />
-              <SegmentedControl.IconButton
-                selected={colorMode === 'dark'}
-                icon={MoonIcon}
-                aria-label="Dark"
-              />
-              <SegmentedControl.IconButton
-                selected={colorMode === 'auto'}
-                icon={DeviceDesktopIcon}
-                aria-label="Auto"
-              />
-            </SegmentedControl>
-
-            <img
-              src="https://assets.datalayer.tech/datalayer-25.svg"
-              alt="Datalayer"
-              style={{ height: '24px' }}
+            <AppearanceControlsWithStore useStore={useExampleThemeStore} />
+            <DatalayerLogo
+              size={24}
+              primaryColor={logoColors.primary}
+              secondaryColor={logoColors.secondary}
             />
           </Box>
         </Box>
@@ -625,9 +568,9 @@ const ExampleAppThemed: React.FC<{
         {/* ── Content area ───────────────────────────────── */}
         <Box
           sx={{
-            marginTop: '50px',
-            height: 'calc(100vh - 50px)',
-            overflow: 'auto',
+            marginTop: '60px',
+            height: 'calc(100vh - 60px)',
+            overflow: 'hidden',
           }}
         >
           {isChangingExample ? (
@@ -636,7 +579,9 @@ const ExampleAppThemed: React.FC<{
               <p>Please wait while the example loads.</p>
             </Box>
           ) : ExampleComponent ? (
-            <ExampleComponent {...exampleProps} />
+            <ExampleWrapper>
+              <ExampleComponent {...exampleProps} />
+            </ExampleWrapper>
           ) : null}
         </Box>
       </Box>
@@ -647,20 +592,24 @@ const ExampleAppThemed: React.FC<{
 // Mount the app - check route to determine which app to render
 const root = document.getElementById('root');
 if (root) {
+  const appRoot =
+    window.__agentRuntimesExamplesRoot ??
+    (window.__agentRuntimesExamplesRoot = createRoot(root));
+
   if (isOAuthCallback()) {
     // Handle OAuth callback - render OAuthCallback component
     console.log('Rendering OAuthCallback (popup flow)');
-    createRoot(root).render(
+    appRoot.render(
       <JupyterReactTheme>
         <OAuthCallback autoClose={true} autoCloseDelay={1000} />
       </JupyterReactTheme>,
     );
   } else if (isNotebookOnlyRoute()) {
     console.log('Rendering NotebookOnlyApp');
-    createRoot(root).render(<NotebookOnlyApp />);
+    appRoot.render(<NotebookOnlyApp />);
   } else {
     console.log('Rendering ExampleApp');
-    createRoot(root).render(<ExampleApp />);
+    appRoot.render(<ExampleApp />);
   }
 } else {
   console.error('Root element not found');

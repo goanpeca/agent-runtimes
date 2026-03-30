@@ -7,28 +7,17 @@
  * CopilotKit Lexical Example with CopilotKit Integration.
  *
  * To run this example, create a .env file in the core directory with:
- * - VITE_DATALAYER_API_TOKEN: Get from https://datalayer.app/settings/iam/tokens
+ * - VITE_DATALAYER_API_KEY: Get from https://datalayer.ai/settings/iam/tokens
  * - VITE_COPILOT_KIT_API_KEY: Get from https://cloud.copilotkit.ai/dashboard
  *
- * You also will need to connect copilot kit to some sort of LLM Add LLM Provider API Key.
+ * You also will need to connect copilotkit to some sort of LLM Add LLM Provider API Key.
  *
  * https://docs.copilotkit.ai/reference/hooks/useFrontendTool
  *
  * @module examples/CopilotKitLexicalExample
  */
 
-import 'prismjs';
-import 'prismjs/components/prism-clike';
-import 'prismjs/components/prism-javascript';
-import 'prismjs/components/prism-markup';
-import 'prismjs/components/prism-markdown';
-import 'prismjs/components/prism-c';
-import 'prismjs/components/prism-css';
-import 'prismjs/components/prism-objectivec';
-import 'prismjs/components/prism-sql';
-import 'prismjs/components/prism-python';
-import 'prismjs/components/prism-rust';
-import 'prismjs/components/prism-swift';
+import '@datalayer/jupyter-react/lib/css/PrismCss';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { $getRoot, $createParagraphNode, EditorState } from 'lexical';
@@ -51,7 +40,7 @@ import { CopilotKit, useFrontendTool } from '@copilotkit/react-core';
 import { CopilotSidebar } from '@copilotkit/react-ui';
 import { Box } from '@datalayer/primer-addons';
 import { useJupyter } from '@datalayer/jupyter-react';
-import { ThemedJupyterProvider } from './stores/themedProvider';
+import { ThemedJupyterProvider } from './utils/themedProvider';
 import {
   ComponentPickerMenuPlugin,
   JupyterCellPlugin,

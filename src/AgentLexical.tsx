@@ -19,18 +19,7 @@
  *   - jupyterToken: token for the Jupyter server (optional, falls back to jupyter-config-data)
  */
 
-import 'prismjs';
-import 'prismjs/components/prism-clike';
-import 'prismjs/components/prism-javascript';
-import 'prismjs/components/prism-markup';
-import 'prismjs/components/prism-markdown';
-import 'prismjs/components/prism-c';
-import 'prismjs/components/prism-css';
-import 'prismjs/components/prism-objectivec';
-import 'prismjs/components/prism-sql';
-import 'prismjs/components/prism-python';
-import 'prismjs/components/prism-rust';
-import 'prismjs/components/prism-swift';
+import '@datalayer/jupyter-react/lib/css/PrismCss';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { $getRoot, $createParagraphNode, EditorState } from 'lexical';
@@ -87,7 +76,7 @@ import {
   TablePlugin,
 } from '@datalayer/jupyter-lexical';
 import { ServiceManager } from '@jupyterlab/services';
-import { Chat } from './components/chat';
+import { Chat } from './chat';
 import { ChatInlinePlugin } from './lexical/ChatInlinePlugin';
 import { useChatInlineToolbarItems } from './lexical/useChatInlineToolbarItems';
 import { useLexicalTools } from './tools/adapters/agent-runtimes/lexicalHooks';
@@ -350,7 +339,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agentId, tools }) => {
       }}
     >
       <Chat
-        transport="ag-ui"
+        protocol="ag-ui"
         baseUrl={BASE_URL}
         agentId={agentId}
         title="Agent Lexical"

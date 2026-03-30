@@ -7,18 +7,18 @@
  * React hooks for chat tool registration and usage.
  * Compatible with CopilotKit's useFrontendTool pattern.
  *
- * @module components/chat/hooks/useTools
+ * @module components/hooks/useTools
  */
 
 import { useEffect, useMemo } from 'react';
-import { useChatStore, type ToolCallState } from '../components/chat/store';
+import { useChatStore, type ToolCallState } from '../stores';
 import type {
   FrontendToolDefinition,
   ToolParameter,
   ToolRenderProps,
   ToolRenderAndWaitProps,
   ToolLocation,
-} from '../components/chat/types/tool';
+} from '../types/tools';
 
 /**
  * Type signature for useFrontendTool hook

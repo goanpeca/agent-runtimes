@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from versioning import ensure_spec_version, version_suffix
 
 
 def _fmt_list(items: list[str]) -> str:
@@ -33,6 +34,7 @@ def load_envvar_specs(specs_dir: Path) -> list[dict[str, Any]]:
     for yaml_file in sorted(specs_dir.glob("*.yaml")):
         with open(yaml_file) as f:
             spec = yaml.safe_load(f)
+            ensure_spec_version(spec)
             specs.append(spec)
     return specs
 
@@ -51,25 +53,9 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
         "DO NOT EDIT MANUALLY - run 'make specs' to regenerate.",
         '"""',
         "",
-        "from dataclasses import dataclass",
-        "from typing import Dict, List, Optional",
+        "from typing import Dict",
         "",
-        "",
-        "# " + "=" * 76,
-        "# Environment Variable Specification",
-        "# " + "=" * 76,
-        "",
-        "@dataclass",
-        "class EnvvarSpec:",
-        '    """Environment variable specification."""',
-        "",
-        "    id: str",
-        "    name: str",
-        "    description: str",
-        "    registrationUrl: Optional[str]",
-        "    tags: List[str]",
-        "    icon: Optional[str]",
-        "    emoji: Optional[str]",
+        "from agent_runtimes.types import EnvvarSpec",
         "",
         "",
         "# " + "=" * 76,
@@ -81,7 +67,8 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
     # Generate envvar constants
     for spec in specs:
         envvar_id = spec["id"]
-        const_name = f"{envvar_id}_SPEC"
+        version = spec["version"]
+        const_name = f"{envvar_id}_SPEC{version_suffix(version)}"
 
         registration_url_value = (
             f'"{spec.get("registrationUrl")}"'
@@ -97,6 +84,7 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
             [
                 f"{const_name} = EnvvarSpec(",
                 f'    id="{envvar_id}",',
+                f'    version="{version}",',
                 f'    name="{spec["name"]}",',
                 f'    description="{spec["description"]}",',
                 f"    registrationUrl={registration_url_value},",
@@ -121,7 +109,8 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
 
     for spec in specs:
         envvar_id = spec["id"]
-        const_name = f"{envvar_id}_SPEC"
+        version = spec["version"]
+        const_name = f"{envvar_id}_SPEC{version_suffix(version)}"
         lines.append(f'    "{envvar_id}": {const_name},')
 
     lines.extend(
@@ -130,10 +119,17 @@ def generate_python_code(specs: list[dict[str, Any]]) -> str:
             "",
             "",
             "def get_envvar_spec(envvar_id: str) -> EnvvarSpec:",
-            '    """Get environment variable specification by ID."""',
-            "    if envvar_id not in ENVVAR_CATALOG:",
+            '    """Get environment variable specification by ID (accepts both bare and versioned refs)."""',
+            "    spec = ENVVAR_CATALOG.get(envvar_id)",
+            "    if spec is not None:",
+            "        return spec",
+            "    # Try stripping version suffix for versioned refs like 'NAME:0.0.1'",
+            "    base, _, ver = envvar_id.rpartition(':')",
+            "    if base and '.' in ver:",
+            "        spec = ENVVAR_CATALOG.get(base)",
+            "    if spec is None:",
             '        raise ValueError(f"Unknown environment variable: {envvar_id}")',
-            "    return ENVVAR_CATALOG[envvar_id]",
+            "    return spec",
             "",
         ]
     )
@@ -158,15 +154,7 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
         " * DO NOT EDIT MANUALLY - run 'make specs' to regenerate.",
         " */",
         "",
-        "export interface EnvvarSpec {",
-        "  id: string;",
-        "  name: string;",
-        "  description: string;",
-        "  registrationUrl?: string;",
-        "  tags: string[];",
-        "  icon?: string;",
-        "  emoji?: string;",
-        "}",
+        "import type { EnvvarSpec } from '../types';",
         "",
         "// " + "=" * 76,
         "// Environment Variable Definitions",
@@ -177,7 +165,8 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
     # Generate envvar constants
     for spec in specs:
         envvar_id = spec["id"]
-        const_name = f"{envvar_id}_SPEC"
+        version = spec["version"]
+        const_name = f"{envvar_id}_SPEC{version_suffix(version)}"
 
         # Format arrays for TypeScript
         tags_json = str(spec.get("tags", [])).replace("'", '"')
@@ -195,6 +184,7 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
             [
                 f"export const {const_name}: EnvvarSpec = {{",
                 f"  id: '{envvar_id}',",
+                f"  version: '{version}',",
                 f"  name: '{spec['name']}',",
                 f"  description: '{spec['description']}',",
             ]
@@ -226,15 +216,26 @@ def generate_typescript_code(specs: list[dict[str, Any]]) -> str:
 
     for spec in specs:
         envvar_id = spec["id"]
-        const_name = f"{envvar_id}_SPEC"
+        version = spec["version"]
+        const_name = f"{envvar_id}_SPEC{version_suffix(version)}"
         lines.append(f"  '{envvar_id}': {const_name},")
 
     lines.extend(
         [
             "};",
             "",
+            "function resolveEnvvarId(envvarId: string): string {",
+            "  if (envvarId in ENVVAR_CATALOG) return envvarId;",
+            "  const idx = envvarId.lastIndexOf(':');",
+            "  if (idx > 0) {",
+            "    const base = envvarId.slice(0, idx);",
+            "    if (base in ENVVAR_CATALOG) return base;",
+            "  }",
+            "  return envvarId;",
+            "}",
+            "",
             "export function getEnvvarSpec(envvarId: string): EnvvarSpec {",
-            "  const spec = ENVVAR_CATALOG[envvarId];",
+            "  const spec = ENVVAR_CATALOG[resolveEnvvarId(envvarId)];",
             "  if (!spec) {",
             "    throw new Error(`Unknown environment variable: ${envvarId}`);",
             "  }",

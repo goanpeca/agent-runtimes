@@ -38,11 +38,11 @@ import {
   setJupyterServerToken,
 } from '@datalayer/jupyter-react';
 import { ServiceManager } from '@jupyterlab/services';
-import { Chat } from './components/chat';
+import { Chat } from './chat';
 import { useNotebookTools } from './tools/adapters/agent-runtimes/notebookHooks';
 import { DEFAULT_MODEL } from './specs';
 
-import MatplotlibNotebook from './examples/stores/notebooks/Matplotlib.ipynb.json';
+import MatplotlibNotebook from './examples/utils/notebooks/Matplotlib.ipynb.json';
 
 import '../style/primer-primitives.css';
 
@@ -144,7 +144,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ agentId }) => {
       }}
     >
       <Chat
-        transport="ag-ui"
+        protocol="ag-ui"
         baseUrl={BASE_URL}
         agentId={agentId}
         title="Agent Notebook"

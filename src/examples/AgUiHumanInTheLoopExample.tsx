@@ -26,8 +26,9 @@ import {
   Button,
 } from '@primer/react';
 import { Box } from '@datalayer/primer-addons';
-import { ThemedProvider, useThemeBrandColor } from './stores/themedProvider';
-import { ChatFloating, type ToolCallRenderContext } from '../components/chat';
+import { ThemedProvider, useThemeBrandColor } from './utils/themedProvider';
+import { ChatFloating } from '../chat';
+import type { ToolCallRenderContext } from '../types';
 import {
   TasklistIcon,
   CheckCircleFillIcon,
@@ -450,6 +451,7 @@ const AgUiHumanInTheLoopExample: React.FC = () => {
 
         {/* Floating chat with tool rendering */}
         <ChatFloating
+          protocol="ag-ui"
           endpoint={HUMAN_IN_THE_LOOP_ENDPOINT}
           title="Task Planner"
           description="I can help you plan tasks. I'll generate steps for your review."

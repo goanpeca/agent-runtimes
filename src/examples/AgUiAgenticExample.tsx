@@ -18,8 +18,8 @@
 import React from 'react';
 import { Text } from '@primer/react';
 import { Box } from '@datalayer/primer-addons';
-import { ThemedProvider } from './stores/themedProvider';
-import { ChatFloating } from '../components/chat';
+import { ThemedProvider } from './utils/themedProvider';
+import { ChatFloating } from '../chat';
 
 // AG-UI endpoint for agentic chat example
 const AGENTIC_CHAT_ENDPOINT =
@@ -145,6 +145,7 @@ const AgUiAgenticExample: React.FC = () => {
 
         {/* Floating chat */}
         <ChatFloating
+          protocol="ag-ui"
           endpoint={AGENTIC_CHAT_ENDPOINT}
           title="Agentic Chat"
           description="Chat with an AI agent that can use tools like getting the current time."

@@ -10,37 +10,24 @@ DO NOT EDIT MANUALLY - run 'make specs' to regenerate.
 """
 
 import os
-from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Dict, List
 
-
-@dataclass
-class SkillSpec:
-    """Skill specification."""
-
-    id: str
-    name: str
-    description: str
-    module: str
-    envvars: List[str]
-    optional_env_vars: List[str]
-    dependencies: List[str]
-    tags: List[str]
-    icon: str | None
-    emoji: str | None
-    enabled: bool
-
+from agent_runtimes.types import SkillSpec
 
 # ============================================================================
 # Skill Definitions
 # ============================================================================
 
-CRAWL_SKILL_SPEC = SkillSpec(
+CRAWL_SKILL_SPEC_0_0_1 = SkillSpec(
     id="crawl",
+    version="0.0.1",
     name="Web Crawl Skill",
     description="Web crawling and content extraction capabilities",
-    module="agent_skills.crawl",
-    envvars=["TAVILY_API_KEY"],
+    module="agent_skills.skills.crawl",
+    package=None,
+    method=None,
+    path=None,
+    envvars=["TAVILY_API_KEY:0.0.1"],
     optional_env_vars=[],
     dependencies=["requests>=2.31.0", "beautifulsoup4>=4.12.0"],
     tags=["web", "crawl", "scraping"],
@@ -49,12 +36,34 @@ CRAWL_SKILL_SPEC = SkillSpec(
     enabled=True,
 )
 
-GITHUB_SKILL_SPEC = SkillSpec(
+EVENTS_SKILL_SPEC_0_0_1 = SkillSpec(
+    id="events",
+    version="0.0.1",
+    name="Events Skill",
+    description="Event generation, enrichment, and lifecycle orchestration",
+    module="agent_skills.skills.events",
+    package=None,
+    method=None,
+    path=None,
+    envvars=[],
+    optional_env_vars=[],
+    dependencies=["httpx>=0.27.0"],
+    tags=["events", "orchestration", "automation"],
+    icon="bell",
+    emoji="📅",
+    enabled=True,
+)
+
+GITHUB_SKILL_SPEC_0_0_1 = SkillSpec(
     id="github",
+    version="0.0.1",
     name="GitHub Skill",
     description="GitHub repository management and code operations",
-    module="agent_skills.github",
-    envvars=["GITHUB_TOKEN"],
+    module="agent_skills.skills.github",
+    package=None,
+    method=None,
+    path=None,
+    envvars=["GITHUB_TOKEN:0.0.1"],
     optional_env_vars=[],
     dependencies=["PyGithub>=2.1.0"],
     tags=["github", "git", "code"],
@@ -63,11 +72,33 @@ GITHUB_SKILL_SPEC = SkillSpec(
     enabled=True,
 )
 
-PDF_SKILL_SPEC = SkillSpec(
+JOKES_SKILL_SPEC_0_0_1 = SkillSpec(
+    id="jokes",
+    version="0.0.1",
+    name="Jokes Skill",
+    description="Return random jokes from a local path-based skill.",
+    module=None,
+    package=None,
+    method=None,
+    path="jokes",
+    envvars=[],
+    optional_env_vars=[],
+    dependencies=[],
+    tags=["fun", "humor", "demo"],
+    icon="smiley",
+    emoji="😄",
+    enabled=True,
+)
+
+PDF_SKILL_SPEC_0_0_1 = SkillSpec(
     id="pdf",
+    version="0.0.1",
     name="PDF Processing Skill",
     description="PDF document reading, parsing, and extraction",
-    module="agent_skills.pdf",
+    module="agent_skills.skills.pdf",
+    package=None,
+    method=None,
+    path=None,
     envvars=[],
     optional_env_vars=[],
     dependencies=["PyPDF2>=3.0.0", "pdfplumber>=0.10.0"],
@@ -77,14 +108,35 @@ PDF_SKILL_SPEC = SkillSpec(
     enabled=True,
 )
 
+TEXT_SUMMARIZER_SKILL_SPEC_0_0_1 = SkillSpec(
+    id="text-summarizer",
+    version="0.0.1",
+    name="Text Summarizer Skill",
+    description="Summarize text content using extractive and abstractive techniques. Use when the user asks for summaries, key points, or condensed versions of documents.",
+    module=None,
+    package="agent_skills.skills.text_summarizer",
+    method="summarize_text",
+    path=None,
+    envvars=[],
+    optional_env_vars=[],
+    dependencies=["agent-skills>=0.0.1"],
+    tags=["nlp", "summarization", "text-processing"],
+    icon="note",
+    emoji="📝",
+    enabled=True,
+)
+
 # ============================================================================
 # Skill Catalog
 # ============================================================================
 
 SKILL_CATALOG: Dict[str, SkillSpec] = {
-    "crawl": CRAWL_SKILL_SPEC,
-    "github": GITHUB_SKILL_SPEC,
-    "pdf": PDF_SKILL_SPEC,
+    "crawl": CRAWL_SKILL_SPEC_0_0_1,
+    "events": EVENTS_SKILL_SPEC_0_0_1,
+    "github": GITHUB_SKILL_SPEC_0_0_1,
+    "jokes": JOKES_SKILL_SPEC_0_0_1,
+    "pdf": PDF_SKILL_SPEC_0_0_1,
+    "text-summarizer": TEXT_SUMMARIZER_SKILL_SPEC_0_0_1,
 }
 
 
@@ -100,12 +152,12 @@ def check_env_vars_available(env_vars: List[str]) -> bool:
     """
     if not env_vars:
         return True
-    return all(os.environ.get(var) for var in env_vars)
+    return all(os.environ.get(var.rsplit(":", 1)[0]) for var in env_vars)
 
 
 def get_skill_spec(skill_id: str) -> SkillSpec | None:
     """
-    Get a skill specification by ID.
+    Get a skill specification by ID (accepts both bare and versioned refs).
 
     Args:
         skill_id: The unique identifier of the skill.
@@ -113,7 +165,13 @@ def get_skill_spec(skill_id: str) -> SkillSpec | None:
     Returns:
         The SkillSpec, or None if not found.
     """
-    return SKILL_CATALOG.get(skill_id)
+    spec = SKILL_CATALOG.get(skill_id)
+    if spec is not None:
+        return spec
+    base, _, ver = skill_id.rpartition(":")
+    if base and "." in ver:
+        return SKILL_CATALOG.get(base)
+    return None
 
 
 def list_skill_specs() -> List[SkillSpec]:

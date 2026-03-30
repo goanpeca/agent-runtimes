@@ -16,6 +16,7 @@ The Vercel AI SDK protocol provides:
 - Standard message format compatible with Vercel AI SDK
 """
 
+import inspect
 import logging
 import traceback
 from typing import TYPE_CHECKING, Any, AsyncIterator
@@ -33,9 +34,19 @@ else:
     except (ImportError, ModuleNotFoundError):
         VercelAIAdapter = None  # type: ignore[assignment,misc]
 
+from pydantic_ai import DeferredToolRequests
+from pydantic_ai.tools import ToolDefinition
+from pydantic_ai.toolsets import ExternalToolset
+
 from ..adapters.base import BaseAgent
 from ..context.identities import IdentityContextManager
 from ..context.usage import get_usage_tracker
+from ..observability.prompt_turn_metrics import (
+    extract_identity_hints,
+    extract_jwt_token,
+    extract_user_id_from_jwt,
+    record_prompt_turn_completion,
+)
 from .base import BaseTransport
 
 logger = logging.getLogger(__name__)
@@ -97,6 +108,7 @@ class VercelAITransport(BaseTransport):
         toolsets: list[Any] | None = None,
         builtin_tools: list[str] | None = None,
         agent_id: str | None = None,
+        has_spec_frontend_tools: bool = False,
     ):
         """Initialize the Vercel AI adapter.
 
@@ -106,15 +118,17 @@ class VercelAITransport(BaseTransport):
             toolsets: Additional toolsets (e.g., MCP servers).
             builtin_tools: List of built-in tool names to expose.
             agent_id: Agent ID for usage tracking.
+            has_spec_frontend_tools: Whether the agent spec declares frontend tools.
         """
         super().__init__(agent)
         self._usage_limits = usage_limits or UsageLimits(
-            tool_calls_limit=5,
+            tool_calls_limit=20,
             output_tokens_limit=5000,
             total_tokens_limit=100000,
         )
         self._toolsets = toolsets or []
         self._builtin_tools = builtin_tools or []
+        self._has_spec_frontend_tools = has_spec_frontend_tools
         # Get agent_id from adapter if available
         if agent_id:
             self._agent_id = agent_id
@@ -183,7 +197,6 @@ class VercelAITransport(BaseTransport):
         """
         import json
         import logging
-        from collections.abc import AsyncIterator
         from typing import TYPE_CHECKING
 
         if TYPE_CHECKING:
@@ -192,9 +205,11 @@ class VercelAITransport(BaseTransport):
         logger = logging.getLogger(__name__)
         pydantic_agent = self._get_pydantic_agent()
 
-        # Extract model, builtinTools, and identities from request body if not provided
+        # Extract model, builtinTools, identities, and frontend tools from request body if not provided
         builtin_tools_from_request: list[str] | None = None
         identities_from_request: list[dict[str, Any]] | None = None
+        frontend_tools_from_request: list[dict[str, Any]] | None = None
+        sdk_version: str | None = None
         body: dict[str, Any] | None = None
 
         try:
@@ -225,6 +240,16 @@ class VercelAITransport(BaseTransport):
                 providers = [i.get("provider") for i in identities_from_request]
                 logger.info(
                     f"Vercel AI: Received identities from request for providers: {providers}"
+                )
+
+            # Extract SDK version when present (newer AI SDK clients).
+            sdk_version = body.get("sdkVersion") or body.get("sdk_version")
+
+            # Extract frontend tools from request body
+            frontend_tools_from_request = body.get("tools")
+            if frontend_tools_from_request:
+                logger.info(
+                    f"Vercel AI: Received {len(frontend_tools_from_request)} frontend tools from request"
                 )
 
             # Create a new request with the cached body for pydantic-ai to consume
@@ -284,6 +309,45 @@ class VercelAITransport(BaseTransport):
             except ImportError as e:
                 logger.error(f"Vercel AI: Could not import builtin_tools: {e}")
 
+        # Extract identity/JWT hints for OTEL metric attribution
+        metric_user_id: str | None = None
+        metric_user_provider: str | None = None
+        metric_user_jwt_token = extract_jwt_token(
+            request.headers.get("authorization"),
+            request.headers.get("x-external-token"),
+        )
+        if identities_from_request:
+            hint_user_id, hint_provider, hint_token = extract_identity_hints(
+                identities_from_request
+            )
+            metric_user_provider = hint_provider or metric_user_provider
+            metric_user_id = hint_user_id or metric_user_id
+            metric_user_jwt_token = hint_token or metric_user_jwt_token
+        if not metric_user_id:
+            metric_user_id = extract_user_id_from_jwt(metric_user_jwt_token)
+        if metric_user_id and not metric_user_provider:
+            metric_user_provider = "jwt"
+
+        # Extract the last user message for OTEL prompt recording
+        request_prompt = ""
+        if body and isinstance(body, dict):
+            prompt_candidate = body.get("prompt")
+            if isinstance(prompt_candidate, str):
+                request_prompt = prompt_candidate
+            if not request_prompt:
+                messages_candidate = body.get("messages")
+                if isinstance(messages_candidate, list):
+                    for msg in reversed(messages_candidate):
+                        if not isinstance(msg, dict):
+                            continue
+                        role = msg.get("role")
+                        if role not in ("user", "input"):
+                            continue
+                        content = msg.get("content")
+                        if isinstance(content, str):
+                            request_prompt = content
+                            break
+
         # Create on_complete callback to track usage
         agent_id = self._agent_id
         tracker = get_usage_tracker()
@@ -291,52 +355,78 @@ class VercelAITransport(BaseTransport):
 
         request_start = time.perf_counter()
 
-        async def on_complete(result: "AgentRunResult") -> AsyncIterator[None]:
+        async def on_complete(result: "AgentRunResult") -> None:
             """
             Callback to track usage after agent run completes.
-
-            Yields
-            ------
-            None
-                This generator yields nothing but must be a generator for API compatibility.
             """
             usage = result.usage()
-            if usage:
-                # Extract tool names from result messages
-                tool_names: list[str] = []
-                if hasattr(result, "_messages"):
-                    for msg in result._messages:
-                        if hasattr(msg, "tool_calls"):
-                            for tc in msg.tool_calls:
-                                tool_names.append(tc.name)
+            input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+            output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+            requests_count = int(getattr(usage, "requests", 0) or 0)
+            tool_call_count = int(getattr(usage, "tool_calls", 0) or 0)
 
-                duration_ms = (time.perf_counter() - request_start) * 1000
-                tracker.update_usage(
-                    agent_id=agent_id,
-                    input_tokens=usage.input_tokens,
-                    output_tokens=usage.output_tokens,
-                    requests=usage.requests,  # Number of requests made
-                    tool_calls=usage.tool_calls,
-                    tool_names=tool_names if tool_names else None,
-                    duration_ms=duration_ms,
+            # Extract tool names from result messages
+            tool_names: list[str] = []
+            if hasattr(result, "_messages"):
+                for msg in result._messages:
+                    if hasattr(msg, "tool_calls"):
+                        for tc in msg.tool_calls:
+                            tool_names.append(tc.name)
+
+            duration_ms = (time.perf_counter() - request_start) * 1000
+            tracker.update_usage(
+                agent_id=agent_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                requests=requests_count,  # Number of requests made
+                tool_calls=tool_call_count,
+                tool_names=tool_names if tool_names else None,
+                duration_ms=duration_ms,
+            )
+
+            # Also update message token tracking
+            stats = tracker.get_agent_stats(agent_id)
+            if stats:
+                stats.update_message_tokens(
+                    user_tokens=input_tokens,
+                    assistant_tokens=output_tokens,
                 )
 
-                # Also update message token tracking
-                stats = tracker.get_agent_stats(agent_id)
-                if stats:
-                    stats.update_message_tokens(
-                        user_tokens=usage.input_tokens,
-                        assistant_tokens=usage.output_tokens,
-                    )
+            logger.info(
+                "[Vercel AI] on_complete usage tracked: agent_id=%s input_tokens=%s output_tokens=%s requests=%s tool_calls=%s",
+                agent_id,
+                input_tokens,
+                output_tokens,
+                requests_count,
+                tool_call_count,
+            )
 
-                logger.debug(
-                    f"Tracked usage for agent {agent_id} via on_complete: "
-                    f"input={usage.input_tokens}, output={usage.output_tokens}, "
-                    f"requests={usage.requests}, tools={usage.tool_calls}"
-                )
-            # Must be an async generator, even if it yields nothing
+            # Emit OTEL prompt-turn metrics for every successful completed turn.
+            response_text = ""
+            if hasattr(result, "output") and isinstance(result.output, str):
+                response_text = result.output
+            record_prompt_turn_completion(
+                prompt=request_prompt,
+                response=response_text,
+                duration_ms=duration_ms,
+                protocol="vercel-ai",
+                stop_reason="end_turn",
+                success=True,
+                model=model if isinstance(model, str) else None,
+                tool_call_count=tool_call_count,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=(input_tokens + output_tokens),
+                user_id=metric_user_id,
+                user_provider=metric_user_provider,
+                identities_count=(
+                    len(identities_from_request)
+                    if isinstance(identities_from_request, list)
+                    else None
+                ),
+                user_jwt_token=metric_user_jwt_token,
+            )
             return
-            yield
 
         # Set the identity context for this request so that skill executors
         # can access OAuth tokens during tool execution
@@ -344,6 +434,52 @@ class VercelAITransport(BaseTransport):
             async with IdentityContextManager(identities_from_request):
                 # Get runtime toolsets from the adapter (includes MCP servers)
                 runtime_toolsets = self._get_runtime_toolsets()
+
+                # Add frontend tools as an ExternalToolset if provided in the request
+                has_frontend_tools = False
+                if frontend_tools_from_request:
+                    frontend_tool_defs = []
+                    for tool in frontend_tools_from_request:
+                        tool_name = tool.get("name", "")
+                        tool_desc = tool.get("description", "")
+                        tool_params = tool.get("parameters", {})
+                        # Normalize parameters: accept both JSON Schema and array formats
+                        if isinstance(tool_params, list):
+                            # Convert CopilotKit-style array to JSON Schema
+                            properties = {}
+                            required = []
+                            for p in tool_params:
+                                p_name = p.get("name", "")
+                                p_type = p.get("type", "string")
+                                properties[p_name] = {
+                                    "type": p_type,
+                                    "description": p.get("description", ""),
+                                }
+                                if p.get("required"):
+                                    required.append(p_name)
+                            tool_params = {
+                                "type": "object",
+                                "properties": properties,
+                                "required": required,
+                            }
+                        if tool_name:
+                            frontend_tool_defs.append(
+                                ToolDefinition(
+                                    name=tool_name,
+                                    description=tool_desc,
+                                    parameters_json_schema=tool_params,
+                                )
+                            )
+                    if frontend_tool_defs:
+                        frontend_toolset: ExternalToolset = ExternalToolset(
+                            frontend_tool_defs, id="frontend-tools"
+                        )
+                        runtime_toolsets.append(frontend_toolset)
+                        has_frontend_tools = True
+                        logger.info(
+                            f"[Vercel AI] Added frontend ExternalToolset with {len(frontend_tool_defs)} tools: "
+                            f"{[t.name for t in frontend_tool_defs]}"
+                        )
 
                 # Log toolsets being used with detailed inspection
                 if runtime_toolsets:
@@ -386,14 +522,38 @@ class VercelAITransport(BaseTransport):
                 logger.debug(
                     f"[Vercel AI] Calling VercelAIAdapter.dispatch_request with model={model}"
                 )
+                dispatch_kwargs: dict[str, Any] = {
+                    "request": request,
+                    "agent": pydantic_agent,
+                    "model": model,
+                    "usage_limits": self._usage_limits,
+                    "toolsets": runtime_toolsets,
+                    "builtin_tools": effective_builtin_tools,
+                    "on_complete": on_complete,
+                }
+
+                # Only enable DeferredToolRequests when this request actually
+                # includes frontend tools as an ExternalToolset.
+                #
+                # Using the broader has_spec_frontend_tools flag here causes
+                # output validation failures for normal backend runtime tool
+                # calls (no frontend tools in the current request).
+                if has_frontend_tools:
+                    dispatch_kwargs["output_type"] = [str, DeferredToolRequests]
+                    logger.info(
+                        "[Vercel AI] Enabled DeferredToolRequests output_type for frontend tools"
+                    )
+
+                # Pass sdk_version only if supported by installed pydantic-ai.
+                if (
+                    sdk_version
+                    and "sdk_version"
+                    in inspect.signature(VercelAIAdapter.dispatch_request).parameters
+                ):
+                    dispatch_kwargs["sdk_version"] = sdk_version
+
                 response = await VercelAIAdapter.dispatch_request(
-                    request,
-                    agent=pydantic_agent,
-                    model=model,
-                    usage_limits=self._usage_limits,
-                    toolsets=runtime_toolsets,
-                    builtin_tools=effective_builtin_tools,
-                    on_complete=on_complete,
+                    **dispatch_kwargs,
                 )
                 logger.debug(
                     f"[Vercel AI] dispatch_request returned response type: {type(response)}"

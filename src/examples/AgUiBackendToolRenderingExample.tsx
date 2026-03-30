@@ -19,8 +19,9 @@
 import React, { useCallback } from 'react';
 import { Text } from '@primer/react';
 import { Box } from '@datalayer/primer-addons';
-import { ThemedProvider, useThemeBrandColor } from './stores/themedProvider';
-import { ChatFloating, type ToolCallRenderContext } from '../components/chat';
+import { ThemedProvider, useThemeBrandColor } from './utils/themedProvider';
+import { ChatFloating } from '../chat';
+import type { ToolCallRenderContext } from '../types';
 import { InlineWeatherCard, type WeatherResult } from './ag-ui/weather';
 
 // AG-UI endpoint for backend tool rendering example
@@ -181,6 +182,7 @@ const AgUiBackendToolRenderingExample: React.FC = () => {
 
         {/* Floating chat with inline tool rendering */}
         <ChatFloating
+          protocol="ag-ui"
           endpoint={BACKEND_TOOL_RENDERING_ENDPOINT}
           title="Weather Assistant"
           description="Ask me about the weather anywhere in the world!"

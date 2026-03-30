@@ -14,22 +14,21 @@
  *
  * - `useChat` - Main chat hook for messages, streaming, and state
  * - `useFrontendTool`, `useBackendTool` - Tool registration hooks
- * - `useKeyboardShortcuts` - Keyboard shortcut handling
  *
  * ## Transport-Specific Hooks
  * These hooks provide direct protocol access without the chat component system.
  * Use these for custom implementations or when you need fine-grained control.
  *
- * - `useAGUI` - AG-UI protocol (Pydantic AI's native protocol)
+ * - `useAgUi` - AG-UI protocol (Pydantic AI's native protocol)
  * - `useA2A` - A2A protocol (Agent-to-Agent with JSON-RPC)
  * - `useAcp` - ACP protocol (Agent Client Protocol via WebSocket)
- * - `useVercelChat` - Vercel AI SDK chat protocol
+ * - `useVercelAI` - Vercel AI SDK chat protocol
  *
  * ## Datalayer-Specific Hooks
  * Hooks for Datalayer platform integration.
  *
- * - `useAIAgents` - Datalayer AI Agents REST API
- * - `useNotebookAIAgent` - Notebook-specific agent management
+ * - `useAgentsService` - Datalayer AI Agents REST API
+ * - `useNotebookAgents` - Notebook-specific agent management
  *
  * @module hooks
  */
@@ -58,15 +57,12 @@ export {
 } from './useTools';
 
 /**
- * Keyboard shortcut hooks for chat UI.
+ * ChatBase infrastructure hooks.
  */
-export {
-  useKeyboardShortcuts,
-  useChatKeyboardShortcuts,
-  getShortcutDisplay,
-  type KeyboardShortcut,
-  type UseKeyboardShortcutsOptions,
-} from './useKeyboardShortcuts';
+export { useConfig } from './useConfig';
+export { useSkills } from './useSkills';
+export { useContextSnapshot } from './useContextSnapshot';
+export { useSandbox } from './useSandbox';
 
 // =============================================================================
 // Transport-Specific Hooks (Direct Protocol Access)
@@ -76,7 +72,7 @@ export {
  * AG-UI protocol hook - Pydantic AI's native protocol.
  * Use for direct AG-UI communication without the chat component system.
  */
-export { useAGUI } from './useAGUI';
+export { useAgUi } from './useAgUi';
 
 /**
  * A2A protocol hook - Agent-to-Agent with JSON-RPC 2.0.
@@ -94,22 +90,107 @@ export * from './useAcp';
  * Vercel AI SDK chat hook - HTTP/SSE streaming.
  * Use for direct Vercel AI communication without the chat component system.
  */
-export { useVercelChat } from './useVercelChat';
+export { useVercelAI } from './useVercelAI';
 
 // =============================================================================
 // Datalayer Platform Hooks
 // =============================================================================
 
 /**
- * Datalayer AI Agents REST API hook.
+ * Unified hook for managing agents — both ephemeral and durable.
  */
-export * from './useAgents';
+export { useAgents } from './useAgents';
+
 /**
- * Agent runtimes service hooks for managing agent runtime instances.
+ * Runtime query and mutation hooks.
  */
-export * from './useAgentRuntimes';
+export {
+  useAgentsRuntimes,
+  useAgentRuntimes,
+  useAgentRuntimeByPodName,
+  useCreateAgentRuntime,
+  useDeleteAgentRuntime,
+  useRefreshAgentRuntimes,
+  agentQueryKeys,
+  AGENT_QUERY_OPTIONS,
+  useAgentLifecycleStore,
+  getAgentLifecycleKey,
+} from './useAgents';
+
 /**
- * Centralized agent catalog store for available agent specs and running agents.
+ * Agent catalog store, AI Agents REST API, and registry hooks.
  */
-export * from './useAgentStore';
-export * from './useNotebookAIAgent';
+export {
+  useAgentCatalogStore,
+  type AgentCatalogStoreState,
+} from './useAgentsCatalog';
+
+/**
+ * Agent registry hook.
+ */
+export { useAgentRegistry } from './useAgentsRegistry';
+
+/**
+ * Agents Service REST API (deprecated).
+ */
+export { useAgentsService, useNotebookAgents } from './useAgentsService';
+
+/**
+ * Focused hooks split by responsibility.
+ */
+export {
+  useCheckpoints,
+  useCheckpointsQuery,
+  useRefreshCheckpoints,
+  useDeletePausedAgentRuntime,
+  useResumePausedAgentRuntime,
+  usePauseAgent,
+  useResumeAgent,
+  useCheckpointAgent,
+  useTerminateAgent,
+  useAgentLifecycle,
+  type CheckpointData,
+  type PauseAgentParams,
+  type ResumeAgentParams,
+  type CheckpointAgentParams,
+  type TerminateAgentParams,
+  type AgentLifecycleOptions,
+  type AgentLifecycleReturn,
+} from './useCheckpoints';
+
+export {
+  useToolApprovals,
+  useToolApprovalsQuery,
+  usePendingApprovalCount,
+  useApproveToolRequest,
+  useRejectToolRequest,
+} from './useToolApprovals';
+
+export {
+  useNotifications,
+  useFilteredNotifications,
+  useUnreadNotificationCount,
+  useMarkNotificationRead,
+  useMarkAllNotificationsRead,
+  useAllAgentEvents,
+  useAgentEvents,
+  useAgentEvent,
+  useCreateAgentEvent,
+  useUpdateAgentEvent,
+  useDeleteAgentEvent,
+  useMarkEventRead,
+  useMarkEventUnread,
+} from './useNotifications';
+
+export {
+  useAIAgentsWebSocket,
+  type UseAIAgentsWebSocketOptions,
+} from './useAIAgentsWebSocket';
+
+export {
+  useOtelTotalTokens,
+  fetchOtelTotalTokens,
+  fetchOtelMetricTotal,
+  fetchOtelMetricRows,
+  toMetricValue,
+} from './useMonitoring';

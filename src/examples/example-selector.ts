@@ -13,34 +13,44 @@ export const EXAMPLES: Record<
   string,
   () => Promise<{ default: React.ComponentType }>
 > = {
+  //  Lexical2Example: () => import('./Lexical2Example'),
+  A2UiComponentGalleryExample: () => import('./A2UiComponentGalleryExample'),
+  A2UiContactCardExample: () => import('./A2UiContactCardExample'),
   A2UiRestaurantExample: () => import('./A2UiRestaurantExample'),
+  A2UiViewerExample: () => import('./A2UiViewerExample'),
   AgUiAgenticExample: () => import('./AgUiAgenticExample'),
   AgUiBackendToolRenderingExample: () =>
     import('./AgUiBackendToolRenderingExample'),
-  AgUiHaikuGenUIExample: () => import('./AgUiHaikuGenUIExample'),
+  AgUiHaikuGenUiExample: () => import('./AgUiHaikuGenUiExample'),
   AgUiHumanInTheLoopExample: () => import('./AgUiHumanInTheLoopExample'),
   AgUiSharedStateExample: () => import('./AgUiSharedStateExample'),
-  AgUiToolsBasedGenUIExample: () => import('./AgUiToolsBasedGenUIExample'),
-  AgentRuntimeCustomExample: () => import('./AgentRuntimeCustomExample'),
-  AgentRuntimeFormExample: () => import('./AgentRuntimeFormExample'),
-  AgentRuntimeLexicalSidebarExample: () =>
-    import('./AgentRuntimeLexicalSidebarExample'),
-  AgentRuntimeNotebookExample: () => import('./AgentRuntimeNotebookExample'),
-  AgentRuntimeNotebookSidebarExample: () =>
-    import('./AgentRuntimeNotebookSidebarExample'),
-  AgentRuntimeLexicalExample: () => import('./AgentRuntimeLexicalExample'),
-  //  AgentRuntimeLexical2Example: () =>
-  //    import('./AgentRuntimeLexical2Example'),
-  AgentRuntimeStandaloneExample: () =>
-    import('./AgentRuntimeStandaloneExample'),
-  AgentRuntimeChatExample: () => import('./AgentRuntimeChatExample'),
-  CopilotKitNotebookExample: () => import('./CopilotKitNotebookExample'),
+  AgUiToolsBasedGenUiExample: () => import('./AgUiToolsBasedGenUiExample'),
+  AgentspecExample: () => import('./AgentspecExample'),
+  CellSimpleExample: () => import('./CellSimpleExample'),
+  ChatCustomExample: () => import('./ChatCustomExample'),
+  ChatExample: () => import('./ChatExample'),
+  ChatStandaloneExample: () => import('./ChatStandaloneExample'),
   CopilotKitLexicalExample: () => import('./CopilotKitLexicalExample'),
+  CopilotKitNotebookExample: () => import('./CopilotKitNotebookExample'),
   DatalayerNotebookExample: () => import('./DatalayerNotebookExample'),
-  JupyterCellExample: () => import('./JupyterCellExample'),
-  JupyterNotebookExample: () => import('./JupyterNotebookExample'),
-  //  VercelAiElementsExample: () =>
-  //    import('./vercel-ai-elements/VercelAiElementsShowcase'),
+  AgentCheckpointsExample: () => import('./AgentCheckpointsExample'),
+  AgentCodemodeExample: () => import('./AgentCodemodeExample'),
+  AgentEvalsExample: () => import('./AgentEvalsExample'),
+  AgentGuardrailsExample: () => import('./AgentGuardrailsExample'),
+  AgentToolApprovalsExample: () => import('./AgentToolApprovalsExample'),
+  AgentMemoryExample: () => import('./AgentMemoryExample'),
+  AgentSkillsExample: () => import('./AgentSkillsExample'),
+  AgentOtelExample: () => import('./AgentOtelExample'),
+  AgentSandboxExample: () => import('./AgentSandboxExample'),
+  AgentMonitoringExample: () => import('./AgentMonitoringExample'),
+  AgentNotificationsExample: () => import('./AgentNotificationsExample'),
+  AgentOutputsExample: () => import('./AgentOutputsExample'),
+  AgentTriggersExample: () => import('./AgentTriggersExample'),
+  LexicalExample: () => import('./LexicalExample'),
+  LexicalSidebarExample: () => import('./LexicalSidebarExample'),
+  NotebookExample: () => import('./NotebookExample'),
+  NotebookSidebarExample: () => import('./NotebookSidebarExample'),
+  NotebookSimpleExample: () => import('./NotebookSimpleExample'),
 };
 
 /**
@@ -52,21 +62,20 @@ export function getExampleNames(): string[] {
 
 /**
  * Get the selected example based on environment variable
- * Falls back to 'JupyterNotebookExample' if not specified or invalid
+ * Falls back to 'NotebookExample' if not specified or invalid
  */
 export function getSelectedExample(): () => Promise<{
   default: React.ComponentType;
 }> {
   // import.meta.env.EXAMPLE is defined in vite config
-  const exampleName =
-    (import.meta.env.EXAMPLE as string) || 'JupyterNotebookExample';
+  const exampleName = (import.meta.env.EXAMPLE as string) || 'NotebookExample';
 
   if (!EXAMPLES[exampleName]) {
     console.warn(
       `Example "${exampleName}" not found. Available examples:`,
       getExampleNames(),
     );
-    return EXAMPLES['JupyterNotebookExample'];
+    return EXAMPLES['NotebookExample'];
   }
 
   return EXAMPLES[exampleName];
@@ -77,7 +86,6 @@ export function getSelectedExample(): () => Promise<{
  */
 export function getSelectedExampleName(): string {
   // import.meta.env.EXAMPLE is defined in vite config
-  const exampleName =
-    (import.meta.env.EXAMPLE as string) || 'JupyterNotebookExample';
-  return EXAMPLES[exampleName] ? exampleName : 'JupyterNotebookExample';
+  const exampleName = (import.meta.env.EXAMPLE as string) || 'NotebookExample';
+  return EXAMPLES[exampleName] ? exampleName : 'NotebookExample';
 }

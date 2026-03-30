@@ -27,6 +27,7 @@ Supported Methods:
 
 import asyncio
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -38,6 +39,13 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from ..adapters.base import BaseAgent
+from ..context.usage import get_usage_tracker
+from ..observability.prompt_turn_metrics import (
+    extract_identity_hints,
+    extract_jwt_token,
+    extract_user_id_from_jwt,
+    record_prompt_turn_completion,
+)
 from ..transports.acp import ACPSession, ACPTransport
 
 logger = logging.getLogger(__name__)
@@ -166,7 +174,7 @@ def unregister_prompt(session_id: str) -> None:
 
 def cancel_prompt(session_id: str) -> bool:
     """
-    Cancel a running prompt.
+    Cancel a running prompt and interrupt the sandbox.
 
     Args:
         session_id: The session identifier to cancel.
@@ -177,13 +185,20 @@ def cancel_prompt(session_id: str) -> bool:
     if session_id in _running_prompts:
         _running_prompts[session_id].set()
         logger.info(f"Cancelled ACP prompt for session: {session_id}")
+        # Also interrupt the sandbox so running code stops immediately.
+        try:
+            from agent_runtimes.services.code_sandbox_manager import interrupt_sandbox
+
+            interrupt_sandbox()
+        except Exception:
+            pass
         return True
     return False
 
 
 def cancel_all_prompts() -> int:
     """
-    Cancel all running prompts.
+    Cancel all running prompts and interrupt the sandbox.
 
     Returns:
         Number of prompts cancelled.
@@ -193,6 +208,13 @@ def cancel_all_prompts() -> int:
         cancel_event.set()
         count += 1
         logger.info(f"Cancelled ACP prompt for session: {session_id}")
+    if count > 0:
+        try:
+            from agent_runtimes.services.code_sandbox_manager import interrupt_sandbox
+
+            interrupt_sandbox()
+        except Exception:
+            pass
     return count
 
 
@@ -222,7 +244,7 @@ async def list_agents() -> dict[str, Any]:
     Returns:
         List of agent information.
     """
-    return {"agents": [info.model_dump() for _, info in _agents.values()]}
+    return {"agents": [info.model_dump() for _, info in list(_agents.values())]}
 
 
 @router.get("/agents/{agent_id:path}")
@@ -355,6 +377,10 @@ async def websocket_endpoint(websocket: WebSocket, agent_id: str) -> None:
     agent, agent_info = _agents[agent_id]
     session_id: str | None = None
     adapter: ACPTransport | None = None
+    websocket_user_jwt_token = extract_jwt_token(
+        websocket.headers.get("authorization"),
+        websocket.headers.get("x-external-token"),
+    )
 
     try:
         while True:
@@ -405,7 +431,14 @@ async def websocket_endpoint(websocket: WebSocket, agent_id: str) -> None:
                     )
                     continue
 
-                await _handle_prompt(websocket, message, session_id, agent, adapter)
+                await _handle_prompt(
+                    websocket,
+                    message,
+                    session_id,
+                    agent,
+                    adapter,
+                    websocket_user_jwt_token,
+                )
 
             # Legacy method name: acp.session.run
             elif message.method == "acp.session.run":
@@ -641,6 +674,7 @@ async def _handle_prompt(
     session_id: str,
     agent: BaseAgent,
     adapter: ACPTransport | None,
+    user_jwt_token: str | None = None,
 ) -> None:
     """
     Handle session/prompt method.
@@ -651,6 +685,9 @@ async def _handle_prompt(
     params = message.params or {}
     content = params.get("content", [])
     metadata = params.get("metadata", {})
+    metadata_identities = (
+        metadata.get("identities") if isinstance(metadata, dict) else None
+    )
 
     # Extract model from metadata for per-request model override
     model = metadata.get("model") if isinstance(metadata, dict) else None
@@ -680,6 +717,65 @@ async def _handle_prompt(
     )
 
     stop_reason = "end_turn"
+    start_time = time.perf_counter()
+    tool_call_count = 0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    response_chunks: list[str] = []
+    completed_without_error = False
+    session = _sessions.get(session_id)
+    session_agent_id = session.agent_id if session else None
+    usage_tracker = get_usage_tracker()
+    usage_history_len_before = 0
+    if session_agent_id:
+        stats_before = usage_tracker.get_agent_stats(session_agent_id)
+        if stats_before:
+            usage_history_len_before = len(stats_before.request_usage_history)
+
+    def _parse_usage_tokens(usage: Any) -> tuple[int | None, int | None, int | None]:
+        if not isinstance(usage, dict):
+            return None, None, None
+
+        raw_input = usage.get("input_tokens")
+        if raw_input is None:
+            raw_input = usage.get("prompt_tokens")
+        raw_output = usage.get("output_tokens")
+        if raw_output is None:
+            raw_output = usage.get("completion_tokens")
+        raw_total = usage.get("total_tokens")
+
+        parsed_input = int(raw_input) if isinstance(raw_input, (int, float)) else None
+        parsed_output = (
+            int(raw_output) if isinstance(raw_output, (int, float)) else None
+        )
+        parsed_total = int(raw_total) if isinstance(raw_total, (int, float)) else None
+
+        if parsed_total is None and (
+            parsed_input is not None or parsed_output is not None
+        ):
+            parsed_total = max((parsed_input or 0) + (parsed_output or 0), 0)
+
+        return parsed_input, parsed_output, parsed_total
+
+    session_user_id = session.context.user_id if session and session.context else None
+    metric_user_provider = "acp-session"
+    hint_user_id, hint_provider, hint_token = extract_identity_hints(
+        metadata_identities
+    )
+    user_jwt_token = hint_token or user_jwt_token
+    if hint_user_id:
+        session_user_id = hint_user_id
+    if hint_provider:
+        metric_user_provider = hint_provider
+    if not session_user_id:
+        session_user_id = extract_user_id_from_jwt(user_jwt_token)
+    logger.info(
+        "ACP prompt metrics context: session_id=%s user_id=%s model=%s",
+        session_id,
+        session_user_id,
+        model,
+    )
 
     # Register this prompt for potential cancellation
     cancel_event = register_prompt(session_id)
@@ -695,6 +791,35 @@ async def _handle_prompt(
                     logger.info(f"Prompt cancelled for session {session_id}")
                     stop_reason = "cancelled"
                     break
+
+                event_type = ""
+                event_data: Any = None
+                if hasattr(event, "type"):
+                    event_type = getattr(event, "type", "")
+                    event_data = getattr(event, "data", None)
+                elif isinstance(event, dict):
+                    event_type = event.get("type", "")
+                    event_data = event.get("data")
+
+                if event_type == "text" and isinstance(event_data, str):
+                    response_chunks.append(event_data)
+                elif event_type == "tool_call":
+                    tool_call_count += 1
+                elif event_type == "done":
+                    done_usage = (
+                        event_data.get("usage")
+                        if isinstance(event_data, dict)
+                        else None
+                    )
+                    parsed_input, parsed_output, parsed_total = _parse_usage_tokens(
+                        done_usage
+                    )
+                    if parsed_input is not None:
+                        input_tokens = parsed_input
+                    if parsed_output is not None:
+                        output_tokens = parsed_output
+                    if parsed_total is not None:
+                        total_tokens = parsed_total
 
                 event_count += 1
                 logger.info(f"Received event #{event_count}: {event}")
@@ -720,9 +845,24 @@ async def _handle_prompt(
                     result={"stopReason": stop_reason},
                 ).model_dump()
             )
+            completed_without_error = True
         else:
             # Non-streaming response
             response = await agent.run(prompt, context)
+            response_content = response.content if response else ""
+            if response and response.tool_calls:
+                tool_call_count = len(response.tool_calls)
+            response_usage = response.usage if response else None
+            parsed_input, parsed_output, parsed_total = _parse_usage_tokens(
+                response_usage
+            )
+            if parsed_input is not None:
+                input_tokens = parsed_input
+            if parsed_output is not None:
+                output_tokens = parsed_output
+            if parsed_total is not None:
+                total_tokens = parsed_total
+            response_chunks.append(response_content)
 
             await websocket.send_json(
                 ACPMessage(
@@ -730,10 +870,11 @@ async def _handle_prompt(
                     id=message.id,
                     result={
                         "stopReason": stop_reason,
-                        "output": response.content if response else "",
+                        "output": response_content,
                     },
                 ).model_dump()
             )
+            completed_without_error = True
 
     except Exception as e:
         logger.error(f"Agent prompt error: {e}")
@@ -746,6 +887,44 @@ async def _handle_prompt(
     finally:
         # Always unregister the prompt when done
         unregister_prompt(session_id)
+
+        if session_agent_id and (input_tokens is None or output_tokens is None):
+            stats_after = usage_tracker.get_agent_stats(session_agent_id)
+            if (
+                stats_after
+                and len(stats_after.request_usage_history) > usage_history_len_before
+            ):
+                delta_history = stats_after.request_usage_history[
+                    usage_history_len_before:
+                ]
+                if input_tokens is None:
+                    input_tokens = sum(item.input_tokens for item in delta_history)
+                if output_tokens is None:
+                    output_tokens = sum(item.output_tokens for item in delta_history)
+
+        if total_tokens is None and (
+            input_tokens is not None or output_tokens is not None
+        ):
+            total_tokens = max((input_tokens or 0) + (output_tokens or 0), 0)
+
+        duration_ms = (time.perf_counter() - start_time) * 1000.0
+        record_prompt_turn_completion(
+            prompt=prompt,
+            response="".join(response_chunks),
+            duration_ms=duration_ms,
+            protocol="acp",
+            stop_reason=stop_reason,
+            success=completed_without_error,
+            model=model if isinstance(model, str) else None,
+            tool_call_count=tool_call_count,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            user_id=str(session_user_id) if session_user_id else None,
+            user_provider=metric_user_provider,
+            identities_count=None,
+            user_jwt_token=user_jwt_token,
+        )
 
 
 def _convert_event_to_session_update(
@@ -972,7 +1151,7 @@ def get_registered_agents() -> list[AgentInfo]:
     """
     Get all registered agents.
     """
-    return [info for _, info in _agents.values()]
+    return [info for _, info in list(_agents.values())]
 
 
 def get_active_sessions() -> list[SessionInfo]:

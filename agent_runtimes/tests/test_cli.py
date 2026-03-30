@@ -78,7 +78,7 @@ class TestCLIHelp:
         assert len(data) > 0
         # Check for known agent
         ids = [spec["id"] for spec in data]
-        assert "datalayer-ai/crawler" in ids
+        assert "crawler" in ids
 
 
 class TestServeValidation:
@@ -101,15 +101,10 @@ class TestServeValidation:
     def test_valid_agent_id(self) -> None:
         """Test that a valid --agent-id is accepted."""
         with patch("uvicorn.run") as mock_run:
-            result = runner.invoke(
-                app, ["serve", "--agent-id", "datalayer-ai/data-acquisition"]
-            )
+            result = runner.invoke(app, ["serve", "--agent-id", "data-acquisition"])
             assert result.exit_code == 0
             # Check environment variable was set
-            assert (
-                os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT")
-                == "datalayer-ai/data-acquisition"
-            )
+            assert os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT") == "data-acquisition"
             mock_run.assert_called_once()
 
     def test_valid_agent_id_with_custom_name(self) -> None:
@@ -120,15 +115,13 @@ class TestServeValidation:
                 [
                     "serve",
                     "--agent-id",
-                    "datalayer-ai/crawler",
+                    "crawler",
                     "--agent-name",
                     "my-crawler",
                 ],
             )
             assert result.exit_code == 0
-            assert (
-                os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT") == "datalayer-ai/crawler"
-            )
+            assert os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT") == "crawler"
             assert os.environ.get("AGENT_RUNTIMES_AGENT_NAME") == "my-crawler"
             mock_run.assert_called_once()
 
@@ -199,17 +192,14 @@ class TestTyperEnvVarDefaults:
         """Test AGENT_RUNTIMES_DEFAULT_AGENT env var sets default agent."""
         with patch.dict(
             os.environ,
-            {"AGENT_RUNTIMES_DEFAULT_AGENT": "datalayer-ai/crawler"},
+            {"AGENT_RUNTIMES_DEFAULT_AGENT": "crawler"},
             clear=False,
         ):
             with patch("uvicorn.run"):
                 result = runner.invoke(app, ["serve"])
                 assert result.exit_code == 0
                 # The CLI should accept the env var via Typer
-                assert (
-                    os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT")
-                    == "datalayer-ai/crawler"
-                )
+                assert os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT") == "crawler"
 
     def test_cli_overrides_env_var(self) -> None:
         """Test that CLI arguments override env var defaults."""
@@ -316,18 +306,14 @@ class TestShortOptions:
     def test_short_agent_id_option(self) -> None:
         """Test -a short option for --agent-id."""
         with patch("uvicorn.run"):
-            result = runner.invoke(app, ["serve", "-a", "datalayer-ai/crawler"])
+            result = runner.invoke(app, ["serve", "-a", "crawler"])
             assert result.exit_code == 0
-            assert (
-                os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT") == "datalayer-ai/crawler"
-            )
+            assert os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT") == "crawler"
 
     def test_short_agent_name_option(self) -> None:
         """Test -n short option for --agent-name."""
         with patch("uvicorn.run"):
-            result = runner.invoke(
-                app, ["serve", "-a", "datalayer-ai/crawler", "-n", "my-crawler"]
-            )
+            result = runner.invoke(app, ["serve", "-a", "crawler", "-n", "my-crawler"])
             assert result.exit_code == 0
             assert os.environ.get("AGENT_RUNTIMES_AGENT_NAME") == "my-crawler"
 
@@ -422,12 +408,10 @@ class TestCodeModeOptions:
         """Test --codemode combined with --agent-id."""
         with patch("uvicorn.run"):
             result = runner.invoke(
-                app, ["serve", "--agent-id", "datalayer-ai/crawler", "--codemode"]
+                app, ["serve", "--agent-id", "crawler", "--codemode"]
             )
             assert result.exit_code == 0
-            assert (
-                os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT") == "datalayer-ai/crawler"
-            )
+            assert os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT") == "crawler"
             assert os.environ.get("AGENT_RUNTIMES_CODEMODE") == "true"
 
     def test_codemode_with_skills_and_agent_id(self) -> None:
@@ -438,16 +422,14 @@ class TestCodeModeOptions:
                 [
                     "serve",
                     "--agent-id",
-                    "datalayer-ai/crawler",
+                    "crawler",
                     "--codemode",
                     "--skills",
                     "write-code,edit-code",
                 ],
             )
             assert result.exit_code == 0
-            assert (
-                os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT") == "datalayer-ai/crawler"
-            )
+            assert os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT") == "crawler"
             assert os.environ.get("AGENT_RUNTIMES_CODEMODE") == "true"
             assert os.environ.get("AGENT_RUNTIMES_SKILLS") == "write-code,edit-code"
 
@@ -490,15 +472,13 @@ class TestMcpServersOption:
                 [
                     "serve",
                     "--agent-id",
-                    "datalayer-ai/crawler",
+                    "crawler",
                     "--mcp-servers",
                     "filesystem",
                 ],
             )
             assert result.exit_code == 0
-            assert (
-                os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT") == "datalayer-ai/crawler"
-            )
+            assert os.environ.get("AGENT_RUNTIMES_DEFAULT_AGENT") == "crawler"
             assert os.environ.get("AGENT_RUNTIMES_MCP_SERVERS") == "filesystem"
 
     def test_short_mcp_servers_option(self) -> None:

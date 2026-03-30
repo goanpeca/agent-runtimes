@@ -11,7 +11,7 @@ Used by both app.py (CLI agents) and routes/agents.py (API agents).
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +24,45 @@ def create_skills_toolset(
     """
     Create an AgentSkillsToolset with the specified skills.
 
+    Skills are loaded via two complementary mechanisms, tried in order:
+
+    **Path-based** (Variant 1 + 1c): walk ``skills_path`` recursively and
+    load every sub-directory that contains a ``SKILL.md`` file.  Skill
+    scripts are read from the local filesystem, so the path must be
+    accessible at runtime.  In the Datalayer SaaS Kubernetes pod the
+    entrypoint copies ``/opt/datalayer/skills/`` to the shared emptyDir
+    volume (``/mnt/shared-agent/skills/``); the ``AGENT_RUNTIMES_SKILLS_FOLDER``
+    env var then points here so *both* the agent-runtimes container (which
+    reads the SKILL.md files) and the Jupyter kernel container (which
+    executes the script code sent to it by the SandboxExecutor) can reach
+    the same files.
+
+    **Module-based** (Variant 1b): for each skill whose catalog spec has a
+    ``module`` field, import the Python package and locate the ``SKILL.md``
+    via ``AgentSkill.from_module()``.  Works for both regular packages and
+    namespace packages (directories without ``__init__.py``).  Requires only
+    that ``agent-skills`` (or whatever provides the skills) is pip-installed
+    — no separate on-disk copy is needed.  Script code is still read from
+    the installed package path and sent as a string to the sandbox for
+    execution, so scripts run on the sandbox side regardless of which
+    loading mechanism was used.
+
+    **Package-based** (Variant 2): for catalog specs with a ``package`` +
+    ``method`` field, import the package and wrap a Python callable directly
+    (no script file needed).
+
     Args:
-        skills: List of skill names to load
-        skills_path: Path to the skills directory
-        shared_sandbox: Optional shared sandbox for state persistence
+        skills: List of skill name references to load (may include version
+            suffix, e.g. ``"crawl:0.0.1"``).
+        skills_path: Path to a local skills directory scanned for SKILL.md
+            files (path-based loading).  Set
+            ``AGENT_RUNTIMES_SKILLS_FOLDER=/mnt/shared-agent/skills`` in the
+            Kubernetes pod to point at the shared volume.
+        shared_sandbox: Optional shared sandbox for state persistence.
 
     Returns:
-        AgentSkillsToolset instance or None if skills not available
+        AgentSkillsToolset instance, or ``None`` if agent-skills is not
+        available.
     """
     try:
         from agent_skills import (
@@ -44,24 +76,136 @@ def create_skills_toolset(
             logger.warning("agent-skills pydantic-ai integration not available")
             return None
 
-        selected_set = set(skills)
-        selected_skills: list[AgentSkill] = []
+        def _skill_id_from_ref(ref: str) -> str:
+            base, _, ver = ref.rpartition(":")
+            if base and "." in ver:
+                return base
+            return ref
 
+        selected_ids = {_skill_id_from_ref(s) for s in skills if s}
+        selected_skills: list[AgentSkill] = []
+        loaded_ids: set[str] = set()
+        loaded_skill_names: set[str] = set()
+
+        # ---------------------------------------------------------------------------
+        # Path-based loading (Variant 1): scan skills_path for SKILL.md files.
+        # In K8s the AGENT_RUNTIMES_SKILLS_FOLDER env var points to the shared
+        # emptyDir volume (/mnt/shared-agent/skills) populated by entrypoint.sh.
+        # ---------------------------------------------------------------------------
         for skill_md in Path(skills_path).rglob("SKILL.md"):
             try:
                 skill = AgentSkill.from_skill_md(skill_md)
             except Exception as exc:
                 logger.warning(f"Failed to load skill from {skill_md}: {exc}")
                 continue
-            if skill.name in selected_set:
+            if skill.name in selected_ids and skill.name not in loaded_skill_names:
                 selected_skills.append(skill)
-                logger.info(f"Loaded skill: {skill.name}")
+                loaded_ids.add(skill.name)
+                loaded_skill_names.add(skill.name)
+                logger.info(f"Loaded skill (name-based): {skill.name}")
 
-        missing = selected_set - {s.name for s in selected_skills}
-        if missing:
-            logger.warning(
-                f"Requested skills not found in {skills_path}: {sorted(missing)}"
-            )
+        # ---------------------------------------------------------------------------
+        # Catalog-based loading: for skills not found in skills_path, consult
+        # the skill catalog spec to try module-based, path-based, or
+        # package-based loading.
+        # ---------------------------------------------------------------------------
+        missing_ids = selected_ids - loaded_ids
+        if missing_ids:
+            get_skill_spec: Callable[[str], Any | None] | None
+            try:
+                from ..specs.skills import get_skill_spec as _get_skill_spec
+            except ImportError:
+                get_skill_spec = None
+            else:
+                get_skill_spec = _get_skill_spec
+
+            if get_skill_spec is not None:
+                for skill_name in sorted(missing_ids):
+                    spec = get_skill_spec(skill_name)
+                    if spec is None:
+                        continue
+
+                    # Module-based (Variant 1b): import the Python package and
+                    # locate SKILL.md via AgentSkill.from_module().  Works for
+                    # both regular and namespace packages.
+                    spec_module = getattr(spec, "module", None)
+                    if spec_module and skill_name not in loaded_ids:
+                        try:
+                            skill = AgentSkill.from_module(spec_module)
+                            if skill.name not in loaded_skill_names:
+                                selected_skills.append(skill)
+                                loaded_ids.add(skill_name)
+                                loaded_skill_names.add(skill.name)
+                                logger.info(
+                                    f"Loaded skill (module-based): {skill.name} "
+                                    f"from {spec_module}"
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                f"Failed to load module-based skill '{skill_name}' "
+                                f"from {spec_module}: {exc}"
+                            )
+
+                    # Path-based from catalog (Variant 1c): the catalog spec
+                    # declares a relative path resolved under skills_path.
+                    spec_path = getattr(spec, "path", None)
+                    if spec_path and skill_name not in loaded_ids:
+                        candidate = Path(spec_path)
+                        if not candidate.is_absolute():
+                            candidate = Path(skills_path) / candidate
+                        skill_md = (
+                            candidate
+                            if candidate.name == "SKILL.md"
+                            else candidate / "SKILL.md"
+                        )
+                        if skill_md.exists():
+                            try:
+                                skill = AgentSkill.from_skill_md(skill_md)
+                                if skill.name not in loaded_skill_names:
+                                    selected_skills.append(skill)
+                                    loaded_ids.add(skill_name)
+                                    loaded_skill_names.add(skill.name)
+                                    logger.info(
+                                        f"Loaded skill (path-based): {skill.name} "
+                                        f"from {skill_md}"
+                                    )
+                            except Exception as exc:
+                                logger.warning(
+                                    f"Failed to load path-based skill '{skill_name}' "
+                                    f"from {skill_md}: {exc}"
+                                )
+                        else:
+                            logger.warning(
+                                f"Path-based skill '{skill_name}' not found at {skill_md}"
+                            )
+
+                    # Package-based (Variant 2): catalog spec with package +
+                    # method; wraps a Python callable, no script file needed.
+                    if spec.package and spec.method and skill_name not in loaded_ids:
+                        try:
+                            skill = AgentSkill.from_package(
+                                package=spec.package,
+                                method=spec.method,
+                                name=spec.name,
+                                description=spec.description,
+                                version=spec.version,
+                                tags=list(spec.tags) if spec.tags else None,
+                            )
+                            selected_skills.append(skill)
+                            loaded_ids.add(skill_name)
+                            loaded_skill_names.add(skill.name)
+                            logger.info(
+                                f"Loaded skill (package-based): {skill_name} "
+                                f"from {spec.package}.{spec.method}"
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                f"Failed to load package-based skill '{skill_name}': {exc}"
+                            )
+
+            still_missing = selected_ids - loaded_ids
+            if still_missing:
+                logger.warning(f"Requested skills not found: {sorted(still_missing)}")
 
         # Create executor - use shared sandbox if available
         if shared_sandbox is not None:
@@ -104,6 +248,7 @@ def create_codemode_toolset(
     shared_sandbox: Any | None = None,
     mcp_proxy_url: str | None = None,
     enable_discovery_tools: bool = True,
+    status_change_callback: Any | None = None,
 ) -> Any | None:
     """
     Create a CodemodeToolset with the specified MCP servers.
@@ -213,6 +358,7 @@ def create_codemode_toolset(
             config=codemode_config,
             sandbox=shared_sandbox,
             allow_discovery_tools=enable_discovery_tools,
+            status_change_callback=status_change_callback,
         )
 
         logger.info("Created CodemodeToolset")

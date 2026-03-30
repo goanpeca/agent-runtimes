@@ -31,7 +31,7 @@ import {
   DatalayerThemeProvider,
   setupPrimerPortals,
 } from '@datalayer/primer-addons';
-import { Chat } from './components/chat';
+import { Chat } from './chat';
 import { DEFAULT_MODEL } from './specs';
 
 import '../style/primer-primitives.css';
@@ -163,7 +163,7 @@ export const Agent: React.FC = () => {
   return (
     <DatalayerThemeProvider>
       <Chat
-        transport="ag-ui"
+        protocol="ag-ui"
         baseUrl={BASE_URL}
         agentId={agentId}
         title="Agent"

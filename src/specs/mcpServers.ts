@@ -12,14 +12,15 @@
  * DO NOT EDIT MANUALLY - run 'make specs' to regenerate.
  */
 
-import type { MCPServer } from '../types/Types';
+import type { MCPServer } from '../types';
 
 // ============================================================================
 // MCP Server Definitions
 // ============================================================================
 
-export const ALPHAVANTAGE_MCP_SERVER: MCPServer = {
+export const ALPHAVANTAGE_MCP_SERVER_0_0_1: MCPServer = {
   id: 'alphavantage',
+  version: '0.0.1',
   name: 'Alpha Vantage',
   description: 'Financial market data and stock information',
   icon: 'graph',
@@ -31,11 +32,12 @@ export const ALPHAVANTAGE_MCP_SERVER: MCPServer = {
   enabled: true,
   isAvailable: false,
   tools: [],
-  requiredEnvVars: ['ALPHAVANTAGE_API_KEY'],
+  requiredEnvVars: ['ALPHAVANTAGE_API_KEY:0.0.1'],
 };
 
-export const CHART_MCP_SERVER: MCPServer = {
+export const CHART_MCP_SERVER_0_0_1: MCPServer = {
   id: 'chart',
+  version: '0.0.1',
   name: 'Chart Generator',
   description: 'Generate charts and visualizations',
   icon: 'graph',
@@ -50,8 +52,43 @@ export const CHART_MCP_SERVER: MCPServer = {
   requiredEnvVars: [],
 };
 
-export const FILESYSTEM_MCP_SERVER: MCPServer = {
+export const EARTHDATA_MCP_SERVER_0_0_1: MCPServer = {
+  id: 'earthdata',
+  version: '0.0.1',
+  name: 'Earthdata MCP',
+  description: 'Access NASA Earthdata search and metadata capabilities',
+  icon: 'globe',
+  emoji: '🌍',
+  url: '',
+  command: 'npx',
+  args: ['-y', 'earthdata-mcp-server'],
+  transport: 'stdio',
+  enabled: true,
+  isAvailable: false,
+  tools: [],
+  requiredEnvVars: ['EARTHDATA_USERNAME:0.0.1', 'EARTHDATA_PASSWORD:0.0.1'],
+};
+
+export const EURUS_MCP_SERVER_0_0_1: MCPServer = {
+  id: 'eurus',
+  version: '0.0.1',
+  name: 'Eurus Climate MCP',
+  description: 'Climate and reanalysis analysis tools for spatial workflows',
+  icon: 'graph',
+  emoji: '🌦️',
+  url: '',
+  command: 'eurus-mcp',
+  args: [],
+  transport: 'stdio',
+  enabled: true,
+  isAvailable: false,
+  tools: [],
+  requiredEnvVars: [],
+};
+
+export const FILESYSTEM_MCP_SERVER_0_0_1: MCPServer = {
   id: 'filesystem',
+  version: '0.0.1',
   name: 'Filesystem',
   description: 'Local filesystem read/write operations',
   icon: 'file-directory',
@@ -66,8 +103,9 @@ export const FILESYSTEM_MCP_SERVER: MCPServer = {
   requiredEnvVars: [],
 };
 
-export const GITHUB_MCP_SERVER: MCPServer = {
+export const GITHUB_MCP_SERVER_0_0_1: MCPServer = {
   id: 'github',
+  version: '0.0.1',
   name: 'GitHub',
   description: 'GitHub repository operations (issues, PRs, code search)',
   icon: 'mark-github',
@@ -86,11 +124,12 @@ export const GITHUB_MCP_SERVER: MCPServer = {
   enabled: true,
   isAvailable: false,
   tools: [],
-  requiredEnvVars: ['GITHUB_TOKEN'],
+  requiredEnvVars: ['GITHUB_TOKEN:0.0.1'],
 };
 
-export const GOOGLE_WORKSPACE_MCP_SERVER: MCPServer = {
+export const GOOGLE_WORKSPACE_MCP_SERVER_0_0_1: MCPServer = {
   id: 'google-workspace',
+  version: '0.0.1',
   name: 'Google Workspace',
   description: 'Google Drive, Gmail, Calendar, and Docs integration',
   icon: 'mail',
@@ -102,11 +141,15 @@ export const GOOGLE_WORKSPACE_MCP_SERVER: MCPServer = {
   enabled: true,
   isAvailable: false,
   tools: [],
-  requiredEnvVars: ['GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET'],
+  requiredEnvVars: [
+    'GOOGLE_OAUTH_CLIENT_ID:0.0.1',
+    'GOOGLE_OAUTH_CLIENT_SECRET:0.0.1',
+  ],
 };
 
-export const HUGGINGFACE_MCP_SERVER: MCPServer = {
+export const HUGGINGFACE_MCP_SERVER_0_0_1: MCPServer = {
   id: 'huggingface',
+  version: '0.0.1',
   name: 'Hugging Face',
   description: 'Hugging Face models, datasets, spaces, and papers access',
   icon: 'brain',
@@ -124,11 +167,12 @@ export const HUGGINGFACE_MCP_SERVER: MCPServer = {
   enabled: true,
   isAvailable: false,
   tools: [],
-  requiredEnvVars: ['HF_TOKEN'],
+  requiredEnvVars: ['HF_TOKEN:0.0.1'],
 };
 
-export const KAGGLE_MCP_SERVER: MCPServer = {
+export const KAGGLE_MCP_SERVER_0_0_1: MCPServer = {
   id: 'kaggle',
+  version: '0.0.1',
   name: 'Kaggle',
   description: 'Kaggle datasets, models, competitions, and notebooks access',
   icon: 'database',
@@ -146,11 +190,12 @@ export const KAGGLE_MCP_SERVER: MCPServer = {
   enabled: true,
   isAvailable: false,
   tools: [],
-  requiredEnvVars: ['KAGGLE_TOKEN'],
+  requiredEnvVars: ['KAGGLE_TOKEN:0.0.1'],
 };
 
-export const SALESFORCE_MCP_SERVER: MCPServer = {
+export const SALESFORCE_MCP_SERVER_0_0_1: MCPServer = {
   id: 'salesforce',
+  version: '0.0.1',
   name: 'Salesforce',
   description: 'Salesforce CRM operations (queries, reports, objects, SOQL)',
   icon: 'briefcase',
@@ -162,11 +207,15 @@ export const SALESFORCE_MCP_SERVER: MCPServer = {
   enabled: true,
   isAvailable: false,
   tools: [],
-  requiredEnvVars: ['SALESFORCE_ACCESS_TOKEN', 'SALESFORCE_INSTANCE_URL'],
+  requiredEnvVars: [
+    'SALESFORCE_ACCESS_TOKEN:0.0.1',
+    'SALESFORCE_INSTANCE_URL:0.0.1',
+  ],
 };
 
-export const SLACK_MCP_SERVER: MCPServer = {
+export const SLACK_MCP_SERVER_0_0_1: MCPServer = {
   id: 'slack',
+  version: '0.0.1',
   name: 'Slack',
   description: 'Slack messaging and channel operations',
   icon: 'comment-discussion',
@@ -178,11 +227,16 @@ export const SLACK_MCP_SERVER: MCPServer = {
   enabled: true,
   isAvailable: false,
   tools: [],
-  requiredEnvVars: ['SLACK_BOT_TOKEN', 'SLACK_TEAM_ID', 'SLACK_CHANNEL_IDS'],
+  requiredEnvVars: [
+    'SLACK_BOT_TOKEN:0.0.1',
+    'SLACK_TEAM_ID:0.0.1',
+    'SLACK_CHANNEL_IDS:0.0.1',
+  ],
 };
 
-export const TAVILY_MCP_SERVER: MCPServer = {
+export const TAVILY_MCP_SERVER_0_0_1: MCPServer = {
   id: 'tavily',
+  version: '0.0.1',
   name: 'Tavily Search',
   description: 'Web search and research capabilities via Tavily API',
   icon: 'search',
@@ -194,7 +248,7 @@ export const TAVILY_MCP_SERVER: MCPServer = {
   enabled: true,
   isAvailable: false,
   tools: [],
-  requiredEnvVars: ['TAVILY_API_KEY'],
+  requiredEnvVars: ['TAVILY_API_KEY:0.0.1'],
 };
 
 // ============================================================================
@@ -202,14 +256,16 @@ export const TAVILY_MCP_SERVER: MCPServer = {
 // ============================================================================
 
 export const MCP_SERVER_LIBRARY: Record<string, MCPServer> = {
-  alphavantage: ALPHAVANTAGE_MCP_SERVER,
-  chart: CHART_MCP_SERVER,
-  filesystem: FILESYSTEM_MCP_SERVER,
-  github: GITHUB_MCP_SERVER,
-  'google-workspace': GOOGLE_WORKSPACE_MCP_SERVER,
-  huggingface: HUGGINGFACE_MCP_SERVER,
-  kaggle: KAGGLE_MCP_SERVER,
-  salesforce: SALESFORCE_MCP_SERVER,
-  slack: SLACK_MCP_SERVER,
-  tavily: TAVILY_MCP_SERVER,
+  alphavantage: ALPHAVANTAGE_MCP_SERVER_0_0_1,
+  chart: CHART_MCP_SERVER_0_0_1,
+  earthdata: EARTHDATA_MCP_SERVER_0_0_1,
+  eurus: EURUS_MCP_SERVER_0_0_1,
+  filesystem: FILESYSTEM_MCP_SERVER_0_0_1,
+  github: GITHUB_MCP_SERVER_0_0_1,
+  'google-workspace': GOOGLE_WORKSPACE_MCP_SERVER_0_0_1,
+  huggingface: HUGGINGFACE_MCP_SERVER_0_0_1,
+  kaggle: KAGGLE_MCP_SERVER_0_0_1,
+  salesforce: SALESFORCE_MCP_SERVER_0_0_1,
+  slack: SLACK_MCP_SERVER_0_0_1,
+  tavily: TAVILY_MCP_SERVER_0_0_1,
 };

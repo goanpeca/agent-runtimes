@@ -4,3 +4,17 @@
  */
 
 export * from './utils';
+
+export {
+  AgentConfiguration,
+  AGENT_LIBRARIES,
+  TRANSPORTS,
+  EXTENSIONS,
+  isSpecSelection,
+  getSpecId,
+} from './AgentConfiguration';
+export type {
+  AgentConfigurationProps,
+  SkillOption,
+  LibraryAgentSpec,
+} from './AgentConfiguration';

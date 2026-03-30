@@ -51,8 +51,18 @@ from .mcp_proxy import router as mcp_proxy_router
 from .mcp_ui import register_mcp_ui_agent, unregister_mcp_ui_agent
 from .mcp_ui import router as mcp_ui_router
 from .skills import router as skills_router
+from .tool_approvals import legacy_router as tool_approvals_legacy_router
+from .tool_approvals import router as tool_approvals_router
 from .vercel_ai import register_vercel_agent, unregister_vercel_agent
 from .vercel_ai import router as vercel_ai_router
+
+# Trigger routes (optional — from triggers module)
+try:
+    from ..triggers.webhook import webhook_router as _triggers_webhook_router
+
+    triggers_webhook_router = _triggers_webhook_router
+except ImportError:
+    triggers_webhook_router = None
 
 __all__ = [
     "a2a_protocol_router",
@@ -85,6 +95,9 @@ __all__ = [
     "skills_router",
     "start_a2a_task_managers",
     "stop_a2a_task_managers",
+    "tool_approvals_legacy_router",
+    "tool_approvals_router",
+    "triggers_webhook_router",
     "unregister_a2a_agent",
     "unregister_agui_agent",
     "unregister_agui_thread",

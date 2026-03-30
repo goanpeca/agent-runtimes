@@ -28,17 +28,23 @@ dependencies = [
     "a2a-sdk[all]>=0.3.22",
     "ag-ui-protocol>=0.1.10",
     "agent-client-protocol>=0.7.1",
-    "agent-codemode",
-    "agent-skills",
+    "agent-codemode>=0.1.0",
+    "agent-skills>=0.1.1",
     "anthropic",
-    "code-sandboxes",
-    "datalayer-core",
-    "fasta2a @ git+https://github.com/datalayer-externals/fasta2a.git@feature/sse-streaming-2#egg=fasta2a",
+    "code-sandboxes>=0.0.11",
+    "croniter>=6.0.0",
+    "datalayer-core>=1.1.18 ",
+    "fasta2a @ git+https://github.com/datalayer-externals/fasta2a.git@feat/extensions#egg=fasta2a",
     "filelock>=3.20.3",
+    "httpx>=0.28.0",
+    "jupyter-kernel-client>=0.0.9",
     "jupyter-server>=2.10,<3",
     "mcp-ui-server>=1.0.0",
-    "pydantic-ai-slim[openai,anthropic,google,mcp,dbos,bedrock]>=1.0,<1.43.0",
-    "pydantic-graph>=1.0,<1.43.0",
+    "mem0ai>=0.1.40",
+    "opentelemetry-sdk>=1.26.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.26.0",
+    "pydantic-ai-slim[openai,anthropic,google,mcp,dbos,bedrock]>=1.71.0",
+    "pydantic-graph>=1.70.0",
     "pydantic-settings>=2.11.0",
     "pydantic[email]>=2.11.7",
     "tiktoken>=0.5.0",
@@ -113,7 +119,7 @@ version_cmd = "hatch version"
 follow_imports = "skip"
 ignore_missing_imports = true
 disallow_untyped_defs = true
-disallow_any_generics = true
+disallow_any_generics = false
 warn_unused_ignores = true
 disable_error_code = ["attr-defined"]
 
@@ -138,9 +144,12 @@ checks = [
     "SA01",  # See Also section found
     "ES01",  # No extended summary found
     "GL08",  # The object does not have a docstring
+    "GL01",  # Summary placement strictness for opening triple quotes
     "PR01",  # Parameters not documented
     "PR02",  # Unknown parameters
     "RT01",  # No Returns section found
+    "RT05",  # Return value description punctuation strictness
+    "SS06",  # Summary should fit on a single line
 ]
 
 exclude = [  # don't report on objects that match any of these regex

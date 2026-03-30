@@ -11,27 +11,26 @@ from typing import Dict
 
 from agent_runtimes.types import AgentSpec
 
-from .codeai import AGENT_SPECS as CODEAI_AGENTS
-from .codemode_paper import AGENT_SPECS as CODEMODE_PAPER_AGENTS
-from .datalayer_ai import AGENT_SPECS as DATALAYER_AI_AGENTS
-from .mocks import AGENT_SPECS as MOCKS_AGENTS
+from .agents import AGENT_SPECS as ROOT_AGENTS
 
 # Merge all agent specs from subfolders
 AGENT_SPECS: Dict[str, AgentSpec] = {}
-AGENT_SPECS.update(CODEAI_AGENTS)
-AGENT_SPECS.update(CODEMODE_PAPER_AGENTS)
-AGENT_SPECS.update(DATALAYER_AI_AGENTS)
-AGENT_SPECS.update(MOCKS_AGENTS)
+AGENT_SPECS.update(ROOT_AGENTS)
 
 
 def get_agent_spec(agent_id: str) -> AgentSpec | None:
     """Get an agent specification by ID."""
-    return AGENT_SPECS.get(agent_id)
+    spec = AGENT_SPECS.get(agent_id)
+    if spec is not None:
+        return spec
+    base, _, ver = agent_id.rpartition(":")
+    if base and "." in ver:
+        return AGENT_SPECS.get(base)
+    return None
 
 
 def list_agent_specs(prefix: str | None = None) -> list[AgentSpec]:
-    """
-    List all available agent specifications.
+    """List all available agent specifications.
 
     Args:
         prefix: If provided, only return specs whose ID starts with this prefix.

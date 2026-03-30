@@ -16,8 +16,8 @@
 import React, { useState, useCallback } from 'react';
 import { Text, Button, TextInput, Label } from '@primer/react';
 import { Box } from '@datalayer/primer-addons';
-import { ThemedProvider, useThemeBrandColor } from './stores/themedProvider';
-import { ChatFloating } from '../components/chat';
+import { ThemedProvider, useThemeBrandColor } from './utils/themedProvider';
+import { ChatFloating } from '../chat';
 import {
   PlusIcon,
   XIcon,
@@ -468,6 +468,7 @@ const AgUiSharedStateExample: React.FC = () => {
 
         {/* Floating chat with initial state */}
         <ChatFloating
+          protocol="ag-ui"
           endpoint={SHARED_STATE_ENDPOINT}
           title="Recipe Assistant"
           description="Let's build a recipe together! I can add ingredients, instructions, and more."

@@ -81,6 +81,8 @@ class MCPLifecycleManager:
         self._config_servers: dict[str, MCPServerInstance] = {}  # From mcp.json
         self._catalog_servers: dict[str, MCPServerInstance] = {}  # From catalog
         self._failed_servers: dict[str, str] = {}  # server_id -> error message
+        self._starting_servers: set[str] = set()  # server_ids currently starting
+        self._expected_servers: set[str] = set()  # server_ids declared in mcp.json
         self._initialization_event: asyncio.Event | None = None
         self._initialization_started: bool = False
         self._lock = asyncio.Lock()
@@ -292,6 +294,20 @@ class MCPLifecycleManager:
         """
         logger.info(f"🔄 start_server called for '{server_id}'")
 
+        self._starting_servers.add(server_id)
+        try:
+            return await self._start_server_inner(server_id, config, extra_env)
+        finally:
+            self._starting_servers.discard(server_id)
+
+    async def _start_server_inner(
+        self,
+        server_id: str,
+        config: MCPServer | None = None,
+        extra_env: dict[str, str] | None = None,
+    ) -> MCPServerInstance | None:
+        """Inner implementation of start_server (called with _starting_servers tracking)."""
+
         async with self._lock:
             logger.debug(f"Acquired lock for '{server_id}'")
 
@@ -347,6 +363,11 @@ class MCPLifecycleManager:
 
                 if extra_env:
                     env.update(extra_env)
+                    for k, v in extra_env.items():
+                        stripped = v[:5] + "..." if len(v) > 5 else v
+                        logger.info(
+                            f"  [mcp/lifecycle] extra env var for '{server_id}': {k} = {stripped}"
+                        )
                     logger.debug(
                         f"  Merged {len(extra_env)} extra env var(s): "
                         f"{list(extra_env.keys())}"
@@ -700,6 +721,67 @@ class MCPLifecycleManager:
                 "status": "stopped",
             }
 
+    def get_all_servers_status(self) -> list[dict[str, Any]]:
+        """
+        Get per-server status for all known servers.
+
+        Each entry has:
+        - id: server identifier
+        - status: one of "none", "not_started", "starting", "failed", "started"
+        - error: error message (only when status == "failed")
+        - tools_count: number of discovered tools (only when status == "started")
+        """
+        # Collect all known server IDs
+        all_ids: set[str] = set()
+        all_ids.update(self._expected_servers)
+        all_ids.update(self._config_servers.keys())
+        all_ids.update(self._catalog_servers.keys())
+        all_ids.update(self._failed_servers.keys())
+        all_ids.update(self._starting_servers)
+
+        results: list[dict[str, Any]] = []
+        for sid in sorted(all_ids):
+            # Check running first
+            instance = self._config_servers.get(sid) or self._catalog_servers.get(sid)
+            if instance and instance.is_running:
+                results.append(
+                    {
+                        "id": sid,
+                        "status": "started",
+                        "tools_count": len(instance.tools),
+                    }
+                )
+            elif sid in self._starting_servers:
+                results.append(
+                    {
+                        "id": sid,
+                        "status": "starting",
+                    }
+                )
+            elif sid in self._failed_servers:
+                results.append(
+                    {
+                        "id": sid,
+                        "status": "failed",
+                        "error": self._failed_servers[sid],
+                    }
+                )
+            elif sid in self._expected_servers:
+                results.append(
+                    {
+                        "id": sid,
+                        "status": "not_started",
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "id": sid,
+                        "status": "not_started",
+                    }
+                )
+        return results
+
     def get_pydantic_toolsets(
         self, include_config: bool = True, include_catalog: bool = True
     ) -> list[Any]:
@@ -755,6 +837,9 @@ class MCPLifecycleManager:
             self._initialization_event.set()
             return
 
+        # Track all expected servers so status can report "not_started" vs "none"
+        self._expected_servers = set(mcp_servers.keys())
+
         logger.info(f"📦 Initializing {len(mcp_servers)} MCP server(s) from config")
 
         success_count = 0
@@ -803,6 +888,8 @@ class MCPLifecycleManager:
             await self.stop_server(server_id, is_config=False)
 
         self._failed_servers.clear()
+        self._starting_servers.clear()
+        self._expected_servers.clear()
         self._initialization_started = False
         self._initialization_event = None
         logger.info("MCP lifecycle shutdown complete")
