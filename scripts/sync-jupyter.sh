@@ -20,12 +20,29 @@ NC='\033[0m' # No Color
 
 # Get the script directory and project root
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-CORE_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
-JUPYTER_UI_ROOT="$( cd "$CORE_ROOT/../jupyter-ui" && pwd )"
+AGENT_RUNTIMES_ROOT="$( cd "$SCRIPT_DIR/.." && pwd )"
+DATALAYER_CORE_ROOT="$( cd "$AGENT_RUNTIMES_ROOT/../core" && pwd )"
+JUPYTER_UI_ROOT="$( cd "$AGENT_RUNTIMES_ROOT/../jupyter-ui" && pwd )"
 
 # Function to perform the sync
 sync_packages() {
-  echo -e "${BLUE}🔄 Syncing jupyter-ui packages to @datalayer/agent-runtimes...${NC}"
+  echo -e "${BLUE}🔄 Syncing local packages to @datalayer/agent-runtimes...${NC}"
+
+  # Build and sync @datalayer/core
+  echo -e "${BLUE}📦 Building @datalayer/core...${NC}"
+  cd "$DATALAYER_CORE_ROOT"
+  npm run build:lib
+
+  echo -e "${BLUE}📋 Copying core to agent-runtimes/node_modules...${NC}"
+  cd "$AGENT_RUNTIMES_ROOT"
+  rm -rf node_modules/@datalayer/core/lib
+  mkdir -p node_modules/@datalayer/core/lib
+  cp -r "$DATALAYER_CORE_ROOT/lib/." node_modules/@datalayer/core/lib/
+  if [ -d "$DATALAYER_CORE_ROOT/style" ]; then
+    rm -rf node_modules/@datalayer/core/style
+    cp -r "$DATALAYER_CORE_ROOT/style" node_modules/@datalayer/core/
+  fi
+  cp "$DATALAYER_CORE_ROOT/package.json" node_modules/@datalayer/core/
 
   # Build jupyter-react FIRST (lexical depends on it)
   echo -e "${BLUE}📦 Building @datalayer/jupyter-react...${NC}"
@@ -51,7 +68,7 @@ sync_packages() {
 
   # Copy react to core's node_modules for patch-package
   echo -e "${BLUE}📋 Copying react to core/node_modules...${NC}"
-  cd "$CORE_ROOT"
+  cd "$AGENT_RUNTIMES_ROOT"
   # Only replace lib/ directory, preserving LICENSE, README.md, etc.
   rm -rf node_modules/@datalayer/jupyter-react/lib
   mkdir -p node_modules/@datalayer/jupyter-react/lib
@@ -73,7 +90,7 @@ sync_packages() {
 
   # Copy lexical to node_modules
   echo -e "${BLUE}📋 Copying lexical to node_modules...${NC}"
-  cd "$CORE_ROOT"
+  cd "$AGENT_RUNTIMES_ROOT"
   # Only replace lib/ directory, preserving LICENSE, README.md, etc.
   rm -rf node_modules/@datalayer/jupyter-lexical/lib
   mkdir -p node_modules/@datalayer/jupyter-lexical/lib
@@ -103,6 +120,7 @@ if [[ "$1" == "--watch" ]]; then
 
   echo -e "${BLUE}👁️  Watch mode enabled. Monitoring jupyter-ui packages for changes...${NC}"
   echo -e "${YELLOW}📁 Watching:${NC}"
+  echo -e "${YELLOW}   - $DATALAYER_CORE_ROOT/src${NC}"
   echo -e "${YELLOW}   - $JUPYTER_UI_ROOT/packages/lexical/src${NC}"
   echo -e "${YELLOW}   - $JUPYTER_UI_ROOT/packages/react/src${NC}"
   echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
@@ -118,6 +136,7 @@ if [[ "$1" == "--watch" ]]; then
   # -l 1: latency 1 second (debounce rapid changes)
   fswatch -r -l 1 \
     -e ".*" -i "\\.tsx?$" -i "\\.jsx?$" -i "\\.css$" \
+    "$DATALAYER_CORE_ROOT/src" \
     "$JUPYTER_UI_ROOT/packages/lexical/src" \
     "$JUPYTER_UI_ROOT/packages/react/src" | while read -r file; do
     echo -e "\n${YELLOW}📝 Change detected in: $(basename "$file")${NC}"
