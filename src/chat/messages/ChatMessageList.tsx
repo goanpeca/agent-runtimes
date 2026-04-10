@@ -42,7 +42,7 @@ import type { ChatMessage } from '../../types/messages';
 // ---------------------------------------------------------------------------
 
 export interface ToolApprovalConfig {
-  /** Base API URL for the agent runtime (e.g., http://localhost:8765/api/v1) */
+  /** Base API URL for the agent runtime (e.g., `http://localhost:8765/api/v1`). */
   apiBaseUrl: string;
   /** Auth token for API calls */
   authToken?: string;
