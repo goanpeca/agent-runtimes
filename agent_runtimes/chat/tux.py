@@ -10,13 +10,11 @@
 import asyncio
 import getpass
 import json
-import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-import httpx
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.cursor_shapes import CursorShape
@@ -26,14 +24,10 @@ from prompt_toolkit.styles import Style as PTStyle
 from rich.box import ROUNDED
 from rich.columns import Columns
 from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
 from rich.style import Style
 from rich.text import Text
 
-from .banner import (
-    GOODBYE_MESSAGE,
-)
 from .commands import SlashCommand, build_commands
 
 # Rich styles matching Datalayer brand
@@ -271,7 +265,7 @@ class CliTux:
         left_content = Text()
         left_content.append(f"\n  Welcome back {username}!\n\n", style=STYLE_WHITE)
         left_content.append(logo)
-        left_content.append(f"\n  agent-runtimes chat\n", style=STYLE_MUTED)
+        left_content.append("\n  agent-runtimes chat\n", style=STYLE_MUTED)
         left_content.append(f"  {cwd}\n", style=STYLE_MUTED)
 
         # Right panel content - tips
@@ -519,19 +513,17 @@ class CliTux:
 
             # Fetch updated usage stats
             try:
-                async with httpx.AsyncClient() as http_client:
-                    url = f"{self.server_url}/api/v1/configure/agents/{self.agent_id}/context-snapshot"
-                    resp = await http_client.get(url, timeout=5.0)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        input_tokens = data.get("sumResponseInputTokens", 0)
-                        output_tokens = data.get("sumResponseOutputTokens", 0)
-                        self.model_name = (
-                            data.get("modelName", self.model_name) or self.model_name
-                        )
-                        self.context_window = data.get(
-                            "contextWindow", self.context_window
-                        )
+                from agent_runtimes.context.session import get_agent_context_snapshot
+
+                snapshot = get_agent_context_snapshot(self.agent_id)
+                if snapshot is not None:
+                    data = snapshot.to_dict()
+                    input_tokens = data.get("sumResponseInputTokens", 0)
+                    output_tokens = data.get("sumResponseOutputTokens", 0)
+                    self.model_name = (
+                        data.get("modelName", self.model_name) or self.model_name
+                    )
+                    self.context_window = data.get("contextWindow", self.context_window)
             except Exception:
                 pass
 
@@ -592,14 +584,15 @@ class CliTux:
 
         # Fetch initial model info
         try:
-            async with httpx.AsyncClient() as client:
-                url = f"{self.server_url}/api/v1/configure/agents/{self.agent_id}/context-snapshot"
-                response = await client.get(url, timeout=5.0)
-                if response.status_code == 200:
-                    data = response.json()
-                    # Try to get model name from various sources
-                    self.model_name = data.get("modelName") or "claude-sonnet-4"
-                    self.context_window = data.get("contextWindow", 128000)
+            from agent_runtimes.context.session import get_agent_context_snapshot
+
+            snapshot = get_agent_context_snapshot(self.agent_id)
+            if snapshot is not None:
+                data = snapshot.to_dict()
+                model_name = data.get("modelName")
+                if model_name:
+                    self.model_name = model_name
+                self.context_window = data.get("contextWindow", 128000)
         except Exception:
             pass
 

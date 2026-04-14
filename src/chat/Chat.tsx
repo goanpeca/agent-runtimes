@@ -313,6 +313,18 @@ export interface ChatProps {
    * Useful to suppress raw tool-call/continuation text and show only tool cards.
    */
   hideMessagesAfterToolUI?: boolean;
+
+  /**
+   * External context snapshot data for the token usage bar.
+   * When provided, overrides the built-in (no-op) useContextSnapshot hook.
+   */
+  contextSnapshot?: import('../types/context').ContextSnapshotData;
+
+  /**
+   * External MCP toolsets status data for the MCP indicator.
+   * When provided, the data is forwarded to the McpStatusIndicator.
+   */
+  mcpStatusData?: import('../types/mcp').McpToolsetsStatusResponse | null;
 }
 
 /**
@@ -408,6 +420,8 @@ export function Chat({
   frontendTools,
   renderToolResult,
   hideMessagesAfterToolUI = false,
+  contextSnapshot,
+  mcpStatusData,
 }: ChatProps) {
   const [error, setError] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
@@ -728,6 +742,8 @@ export function Chat({
             frontendTools={frontendTools}
             renderToolResult={renderToolResult}
             hideMessagesAfterToolUI={hideMessagesAfterToolUI}
+            contextSnapshot={contextSnapshot}
+            mcpStatusData={mcpStatusData}
           />
         </Box>
       </Box>

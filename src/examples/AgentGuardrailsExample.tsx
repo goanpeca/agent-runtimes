@@ -37,28 +37,54 @@ import {
 import { Box } from '@datalayer/primer-addons';
 import { ErrorView } from './components';
 import { ThemedProvider } from './utils/themedProvider';
+import { uniqueAgentId } from './utils/agentId';
+import type {
+  AgentStreamSnapshotPayload,
+  AgentStreamToolApprovalPayload,
+} from '../types/stream';
+import { parseAgentStreamMessage } from '../types/stream';
 
 const queryClient = new QueryClient();
 import { useSimpleAuthStore } from '@datalayer/core/lib/views/otel';
 import { SignInSimple } from '@datalayer/core/lib/views/iam';
 import { UserBadge } from '@datalayer/core/lib/views/profile';
 import { Chat } from '../chat';
-import { useAgents } from '../hooks/useAgents';
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
 const AGENT_NAME = 'guardrails-demo-agent';
-const AGENT_SPEC_ID = 'monitor-sales-kpis';
-const COST_LIMIT_USD = 5.0;
+const AGENT_SPEC_ID = 'guardrails-cost-tracking-demo';
+const DEFAULT_LOCAL_BASE_URL =
+  import.meta.env.VITE_BASE_URL || 'http://localhost:8765';
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
 interface ToolApprovalRequest {
   id: string;
   tool_name: string;
-  arguments: Record<string, unknown>;
-  timestamp: string;
+  tool_args: Record<string, unknown>;
+  created_at: string;
 }
+
+const toWsUrl = (baseUrl: string, path: string): string | null => {
+  try {
+    const url = new URL(baseUrl);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    url.pathname = path;
+    return url.toString();
+  } catch {
+    return null;
+  }
+};
+
+const toApprovalRequest = (
+  payload: AgentStreamToolApprovalPayload,
+): ToolApprovalRequest => ({
+  id: payload.id,
+  tool_name: payload.tool_name,
+  tool_args: payload.tool_args ?? {},
+  created_at: payload.created_at ?? new Date().toISOString(),
+});
 
 // ─── Inner component (rendered after auth) ─────────────────────────────────
 
@@ -66,33 +92,31 @@ const AgentGuardrailsInner: React.FC<{ onLogout: () => void }> = ({
   onLogout,
 }) => {
   const { token } = useSimpleAuthStore();
+  const agentName = useRef(uniqueAgentId(AGENT_NAME)).current;
 
-  const {
-    runtime,
-    status: runtimeStatus,
-    isReady,
-    error: hookError,
-  } = useAgents({
-    agentSpecId: AGENT_SPEC_ID,
-    autoStart: true,
-    agentConfig: {
-      name: AGENT_NAME,
-      protocol: 'ag-ui',
-      description: 'Agent with cost budget and tool approval guardrails',
-    },
-  });
+  const [runtimeStatus, setRuntimeStatus] = useState<
+    'launching' | 'ready' | 'error'
+  >('launching');
+  const [isReady, setIsReady] = useState(false);
+  const [hookError, setHookError] = useState<string | null>(null);
+  const [agentId, setAgentId] = useState<string>(agentName);
+  const [isReconnectedAgent, setIsReconnectedAgent] = useState(false);
 
   // Cost tracking
   const [costUsd, setCostUsd] = useState(0);
+  const [runBudgetUsd, setRunBudgetUsd] = useState<number | null>(null);
   const [totalTokens, setTotalTokens] = useState(0);
 
   // Tool approval queue
   const [approvals, setApprovals] = useState<ToolApprovalRequest[]>([]);
   const [approvalLoading, setApprovalLoading] = useState<string | null>(null);
+  const [wsState, setWsState] = useState<'connecting' | 'connected' | 'closed'>(
+    'closed',
+  );
 
-  const agentBaseUrl = runtime?.agentBaseUrl || '';
-  const agentId = runtime?.agentId || AGENT_NAME;
-  const podName = runtime?.podName || '(launching…)';
+  const agentBaseUrl = DEFAULT_LOCAL_BASE_URL;
+  const podName = agentId;
+  const chatAuthToken: string | undefined = token === null ? undefined : token;
 
   // Authenticated fetch helper (for sidecar endpoints)
   const authFetch = useCallback(
@@ -108,43 +132,174 @@ const AgentGuardrailsInner: React.FC<{ onLogout: () => void }> = ({
     [token],
   );
 
-  // ── Poll cost + tool approvals ───────────────────────────────────────────
-
   useEffect(() => {
-    if (!isReady || !agentBaseUrl) return;
-    const poll = async () => {
-      try {
-        // Cost usage
-        const costRes = await authFetch(
-          `${agentBaseUrl}/api/v1/agents/${agentId}/cost`,
-        );
-        if (costRes.ok) {
-          const d = await costRes.json();
-          setCostUsd(d.total_cost_usd ?? d.cost ?? 0);
-          setTotalTokens(d.total_tokens ?? 0);
-        }
-      } catch {
-        /* endpoint may not be wired */
-      }
+    let isCancelled = false;
+
+    const createLocalAgent = async () => {
+      setRuntimeStatus('launching');
+      setIsReady(false);
+      setHookError(null);
+      setIsReconnectedAgent(false);
 
       try {
-        // Tool approvals
-        const apprRes = await authFetch(
-          `${agentBaseUrl}/api/v1/agents/${agentId}/tool-approvals?status=pending`,
-        );
-        if (apprRes.ok) {
-          const d = await apprRes.json();
-          setApprovals(Array.isArray(d) ? d : (d.requests ?? []));
+        const response = await authFetch(`${agentBaseUrl}/api/v1/agents`, {
+          method: 'POST',
+          body: JSON.stringify({
+            name: agentName,
+            description: 'Agent with cost budget and tool approval guardrails',
+            agent_library: 'pydantic-ai',
+            transport: 'vercel-ai',
+            agent_spec_id: AGENT_SPEC_ID,
+            enable_skills: true,
+            tools: [],
+          }),
+        });
+
+        let resolvedAgentId = agentName;
+        let isAlreadyRunning = false;
+
+        if (response.ok) {
+          const data = await response.json();
+          resolvedAgentId = data?.id || agentName;
+        } else {
+          const contentType = response.headers.get('content-type') || '';
+          let detail = '';
+
+          if (contentType.includes('application/json')) {
+            const data = await response.json().catch(() => null);
+            detail =
+              (typeof data?.detail === 'string' && data.detail) ||
+              (typeof data?.message === 'string' && data.message) ||
+              '';
+          } else {
+            detail = await response.text();
+          }
+
+          if (response.status === 409 || /already exists/i.test(detail || '')) {
+            isAlreadyRunning = true;
+          } else {
+            throw new Error(
+              detail || `Failed to create local agent: ${response.status}`,
+            );
+          }
         }
-      } catch {
-        /* ok */
+
+        if (!isCancelled) {
+          setAgentId(resolvedAgentId);
+          setIsReconnectedAgent(isAlreadyRunning);
+          setIsReady(true);
+          setRuntimeStatus('ready');
+        }
+      } catch (error) {
+        if (!isCancelled) {
+          setHookError(
+            error instanceof Error ? error.message : 'Agent failed to start',
+          );
+          setRuntimeStatus('error');
+        }
       }
     };
 
-    poll();
-    const interval = setInterval(poll, 5_000);
-    return () => clearInterval(interval);
-  }, [isReady, agentBaseUrl, agentId, authFetch]);
+    void createLocalAgent();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [agentBaseUrl, authFetch]);
+
+  useEffect(() => {
+    if (!isReady) {
+      setWsState('closed');
+      return;
+    }
+
+    const wsUrl = toWsUrl(
+      agentBaseUrl,
+      `/api/v1/tool-approvals/ws?agent_id=${encodeURIComponent(agentId)}`,
+    );
+    if (!wsUrl) {
+      setWsState('closed');
+      return;
+    }
+
+    let closedByCleanup = false;
+    setWsState('connecting');
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      setWsState('connected');
+    };
+
+    ws.onmessage = event => {
+      try {
+        const stream = parseAgentStreamMessage(JSON.parse(String(event.data)));
+        if (!stream) {
+          return;
+        }
+
+        if (stream.type === 'agent.snapshot') {
+          const payload =
+            stream.payload as unknown as AgentStreamSnapshotPayload;
+          const nextApprovals = (payload.approvals ?? []).map(
+            toApprovalRequest,
+          );
+          setApprovals(nextApprovals);
+
+          const snapshotCost =
+            payload.contextSnapshot?.costUsage ?? payload.costUsage;
+          if (snapshotCost) {
+            setCostUsd(Number(snapshotCost.cumulativeCostUsd ?? 0));
+            setRunBudgetUsd(
+              snapshotCost.perRunBudgetUsd == null
+                ? null
+                : Number(snapshotCost.perRunBudgetUsd),
+            );
+            setTotalTokens(Number(snapshotCost.totalTokensUsed ?? 0));
+          }
+          return;
+        }
+
+        if (stream.type === 'tool_approval_created') {
+          const approval = toApprovalRequest(
+            stream.payload as unknown as AgentStreamToolApprovalPayload,
+          );
+          setApprovals(prev => {
+            const next = prev.filter(item => item.id !== approval.id);
+            next.unshift(approval);
+            return next;
+          });
+          return;
+        }
+
+        if (
+          stream.type === 'tool_approval_approved' ||
+          stream.type === 'tool_approval_rejected'
+        ) {
+          const approval =
+            stream.payload as unknown as AgentStreamToolApprovalPayload;
+          setApprovals(prev => prev.filter(item => item.id !== approval.id));
+        }
+      } catch {
+        // Ignore malformed websocket payloads.
+      }
+    };
+
+    ws.onclose = () => {
+      if (!closedByCleanup) {
+        setWsState('closed');
+      }
+    };
+
+    ws.onerror = () => {
+      setWsState('closed');
+    };
+
+    return () => {
+      closedByCleanup = true;
+      ws.close();
+      setWsState('closed');
+    };
+  }, [isReady, agentBaseUrl, agentId]);
 
   // ── Approve / Reject ─────────────────────────────────────────────────────
 
@@ -154,7 +309,7 @@ const AgentGuardrailsInner: React.FC<{ onLogout: () => void }> = ({
       setApprovalLoading(requestId);
       try {
         await authFetch(
-          `${agentBaseUrl}/api/v1/agents/${agentId}/tool-approvals/${requestId}/approve`,
+          `${agentBaseUrl}/api/v1/tool-approvals/${requestId}/approve`,
           { method: 'POST' },
         );
         setApprovals(prev => prev.filter(a => a.id !== requestId));
@@ -173,7 +328,7 @@ const AgentGuardrailsInner: React.FC<{ onLogout: () => void }> = ({
       setApprovalLoading(requestId);
       try {
         await authFetch(
-          `${agentBaseUrl}/api/v1/agents/${agentId}/tool-approvals/${requestId}/reject`,
+          `${agentBaseUrl}/api/v1/tool-approvals/${requestId}/reject`,
           {
             method: 'POST',
             body: JSON.stringify({ reason: 'User rejected' }),
@@ -205,9 +360,7 @@ const AgentGuardrailsInner: React.FC<{ onLogout: () => void }> = ({
       >
         <Spinner size="large" />
         <Text sx={{ color: 'fg.muted' }}>
-          {runtimeStatus === 'launching'
-            ? 'Launching runtime for guardrails agent…'
-            : 'Creating guardrails demo agent…'}
+          Launching guardrails demo agent...
         </Text>
       </Box>
     );
@@ -217,7 +370,8 @@ const AgentGuardrailsInner: React.FC<{ onLogout: () => void }> = ({
     return <ErrorView error={hookError} onLogout={onLogout} />;
   }
 
-  const costPercent = Math.min((costUsd / COST_LIMIT_USD) * 100, 100);
+  const budgetForProgress = runBudgetUsd && runBudgetUsd > 0 ? runBudgetUsd : 1;
+  const costPercent = Math.min((costUsd / budgetForProgress) * 100, 100);
   const costColor =
     costPercent > 80
       ? 'danger.fg'
@@ -246,12 +400,20 @@ const AgentGuardrailsInner: React.FC<{ onLogout: () => void }> = ({
           flexShrink: 0,
         }}
       >
+        {isReconnectedAgent && (
+          <Label variant="secondary" size="small">
+            Reconnected
+          </Label>
+        )}
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <ShieldCheckIcon size={16} />
           <Heading as="h3" sx={{ fontSize: 2 }}>
             Guardrails Demo — {podName}
           </Heading>
         </Box>
+        <Label variant={wsState === 'connected' ? 'success' : 'secondary'}>
+          {wsState}
+        </Label>
 
         {/* Cost tracker */}
         <Box sx={{ flex: 1, maxWidth: 300 }}>
@@ -267,7 +429,9 @@ const AgentGuardrailsInner: React.FC<{ onLogout: () => void }> = ({
               ${costUsd.toFixed(4)}
             </Text>
             <Text sx={{ color: 'fg.muted' }}>
-              / ${COST_LIMIT_USD.toFixed(2)} limit
+              {runBudgetUsd != null
+                ? ` / $${runBudgetUsd.toFixed(2)} run budget`
+                : ' / no run budget'}
             </Text>
           </Box>
           <ProgressBar progress={costPercent} sx={{ height: 6 }} />
@@ -293,8 +457,8 @@ const AgentGuardrailsInner: React.FC<{ onLogout: () => void }> = ({
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             <Text sx={{ flex: 1, fontSize: 1 }}>
               <strong>{req.tool_name}</strong> requests approval
-              {req.arguments
-                ? ` — ${JSON.stringify(req.arguments).slice(0, 120)}`
+              {req.tool_args
+                ? ` — ${JSON.stringify(req.tool_args).slice(0, 120)}`
                 : ''}
             </Text>
             <Button
@@ -322,17 +486,18 @@ const AgentGuardrailsInner: React.FC<{ onLogout: () => void }> = ({
       {/* Chat */}
       <Box sx={{ flex: 1, minHeight: 0 }}>
         <Chat
-          protocol="ag-ui"
+          protocol="vercel-ai"
           baseUrl={agentBaseUrl}
           agentId={agentId}
+          authToken={chatAuthToken}
           title="Guardrails Agent"
           placeholder="Ask something that triggers tools…"
-          description="Agent with $5 cost limit and tool approval gates"
+          description="CostTracking-style guardrail with budget limits and tool approval gates"
           showHeader={false}
           showTokenUsage={true}
           autoFocus
           height="100%"
-          runtimeId={podName}
+          runtimeId={agentId}
           historyEndpoint={`${agentBaseUrl}/api/v1/history`}
           suggestions={[
             { title: 'Update CRM', message: 'Update the CRM records for Q3' },

@@ -60,6 +60,8 @@ import {
   useContextSnapshot,
   useSandbox,
 } from '../../hooks';
+import { useAgentRuntimeWebSocket } from '../../hooks/useAgentRuntimes';
+import { agentRuntimeStore } from '../../stores/agentRuntimeStore';
 import { ChatBaseHeader } from '../header/ChatHeaderBase';
 import { ChatEmptyState } from '../display/EmptyState';
 import { PoweredByTag } from '../display/PoweredByTag';
@@ -227,6 +229,8 @@ function ChatBaseInner({
   historyAuthToken,
   // Pending prompt
   pendingPrompt,
+  contextSnapshot: externalContextSnapshot,
+  mcpStatusData,
 }: ChatBaseProps) {
   useEffect(() => {
     setupPrimerPortals();
@@ -240,6 +244,7 @@ function ChatBaseInner({
   // Stabilize the protocol reference so that the adapter-init effect only
   // re-runs when the protocol *contents* actually change.
   const protocolKey = protocol ? JSON.stringify(protocol) : '';
+  const monitoringServiceName = 'agent-runtimes';
 
   // Store (optional for message persistence)
   const clearStoreMessages = useChatStore(state => state.clearMessages);
@@ -284,6 +289,7 @@ function ChatBaseInner({
     Boolean(protocol?.enableConfigQuery),
     protocol?.configEndpoint,
     protocol?.authToken,
+    protocol?.agentId,
   );
   const skillsQuery = useSkills(
     Boolean(protocol?.enableConfigQuery) && showSkillsMenu,
@@ -296,13 +302,25 @@ function ChatBaseInner({
     protocol?.agentId,
     protocol?.authToken,
   );
-  const agentUsage = contextSnapshotQuery.data;
+  const agentUsage = externalContextSnapshot ?? contextSnapshotQuery.data;
   const sandboxStatusQuery = useSandbox(
     Boolean(protocol?.enableConfigQuery) && codemodeEnabled && showHeader,
     protocol?.configEndpoint,
     protocol?.authToken,
   );
   const sandboxStatus = sandboxStatusQuery.data;
+
+  // ---- Agent-runtime WebSocket (monitoring stream) ----
+  // Derive the bare base URL from configEndpoint or protocol.endpoint.
+  const wsBaseUrl = protocol?.configEndpoint
+    ? protocol.configEndpoint.replace(/\/api\/v1\/(config|configure)\/?$/, '')
+    : (protocol?.endpoint?.replace(/\/api\/v1\/.*$/, '') ?? '');
+  useAgentRuntimeWebSocket({
+    enabled: !!protocol && !!wsBaseUrl,
+    baseUrl: wsBaseUrl,
+    authToken: protocol?.authToken,
+    agentId: protocol?.agentId,
+  });
 
   // ---- Refs ----
   const adapterRef = useRef<BaseProtocolAdapter | null>(null);
@@ -734,6 +752,45 @@ function ChatBaseInner({
     unsubscribeRef.current = adapter.subscribe((event: ProtocolEvent) => {
       switch (event.type) {
         case 'message':
+          if (event.usage) {
+            const timestampMs =
+              event.timestamp instanceof Date
+                ? event.timestamp.getTime()
+                : Date.now();
+            const promptTokens = Math.max(0, event.usage.promptTokens ?? 0);
+            const completionTokens = Math.max(
+              0,
+              event.usage.completionTokens ?? 0,
+            );
+            const totalTokens = Math.max(
+              promptTokens + completionTokens,
+              event.usage.totalTokens ?? 0,
+            );
+
+            const runtimeState = agentRuntimeStore.getState();
+            runtimeState.appendLocalTokenTurn({
+              serviceName: monitoringServiceName,
+              agentId: protocol?.agentId,
+              timestampMs,
+              promptTokens,
+              completionTokens,
+              totalTokens,
+            });
+
+            const liveCumulativeUsd = runtimeState.costUsage?.cumulativeCostUsd;
+            if (
+              typeof liveCumulativeUsd === 'number' &&
+              Number.isFinite(liveCumulativeUsd)
+            ) {
+              runtimeState.upsertLocalCostPoint({
+                serviceName: monitoringServiceName,
+                agentId: protocol?.agentId,
+                timestampMs,
+                cumulativeUsd: Math.max(0, liveCumulativeUsd),
+              });
+            }
+          }
+
           if (suppressAssistantTextForToolOnlyRef.current) {
             const suppressedMessageId = currentAssistantMessageRef.current?.id;
             if (suppressedMessageId) {
@@ -1075,6 +1132,7 @@ function ChatBaseInner({
           pendingToolExecutionsRef.current = 0;
           setIsLoading(false);
           setIsStreaming(false);
+          agentRuntimeStore.getState().requestRefresh();
           break;
 
         case 'error':
@@ -1128,6 +1186,7 @@ function ChatBaseInner({
           pendingToolExecutionsRef.current = 0;
           setIsLoading(false);
           setIsStreaming(false);
+          agentRuntimeStore.getState().requestRefresh();
           break;
       }
     });
@@ -1361,6 +1420,7 @@ function ChatBaseInner({
         if (!adapterRef.current) {
           setIsLoading(false);
           setIsStreaming(false);
+          agentRuntimeStore.getState().requestRefresh();
         }
         suppressAssistantTextForToolOnlyRef.current = false;
         currentAssistantMessageRef.current = null;
@@ -1464,6 +1524,7 @@ function ChatBaseInner({
     pendingToolExecutionsRef.current = 0;
     setIsLoading(false);
     setIsStreaming(false);
+    agentRuntimeStore.getState().requestRefresh();
     suppressAssistantTextForToolOnlyRef.current = false;
     currentAssistantMessageRef.current = null;
 
@@ -1539,7 +1600,8 @@ function ChatBaseInner({
         const isApprovalDecision =
           !!result &&
           typeof result === 'object' &&
-          (result as Record<string, unknown>).type === 'tool-approval-decision' &&
+          (result as Record<string, unknown>).type ===
+            'tool-approval-decision' &&
           typeof (result as Record<string, unknown>).approved === 'boolean';
 
         if (isApprovalDecision && adapterRef.current) {
@@ -1587,9 +1649,7 @@ function ChatBaseInner({
                     message: 'Tool call rejected by user.',
                     ...(approvalId ? { approvalId } : {}),
                   },
-              ...(approved
-                ? {}
-                : { error: 'Tool approval rejected by user' }),
+              ...(approved ? {} : { error: 'Tool approval rejected by user' }),
             });
           } catch (err) {
             console.error('[ChatBase] Approval continuation error:', err);
@@ -1862,6 +1922,7 @@ function ChatBaseInner({
           apiBase={indicatorApiBase}
           authToken={protocol?.authToken}
           agentId={protocol?.agentId}
+          mcpStatusData={mcpStatusData}
         />
       )}
 

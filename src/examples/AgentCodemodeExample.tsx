@@ -34,7 +34,8 @@ import { useSimpleAuthStore } from '@datalayer/core/lib/views/otel';
 import { SignInSimple } from '@datalayer/core/lib/views/iam';
 import { UserBadge } from '@datalayer/core/lib/views/profile';
 import { ThemedProvider } from './utils/themedProvider';
-import { useAgents } from '../hooks/useAgents';
+import { uniqueAgentId } from './utils/agentId';
+import { useAgentRuntimes } from '../hooks/useAgentRuntimes';
 import { Chat } from '../chat';
 
 const queryClient = new QueryClient();
@@ -64,18 +65,20 @@ const AgentCodemodeInner: React.FC<{ onLogout: () => void }> = ({
   onLogout,
 }) => {
   const { token } = useSimpleAuthStore();
+  const agentName = useRef(uniqueAgentId(AGENT_NAME)).current;
 
   const {
     runtime,
     status: runtimeStatus,
     isReady,
     error: hookError,
-  } = useAgents({
+  } = useAgentRuntimes({
     agentSpecId: AGENT_SPEC_ID,
     autoStart: true,
     agentConfig: {
-      name: AGENT_NAME,
-      protocol: 'ag-ui',
+      name: agentName,
+      model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+      protocol: 'vercel-ai',
       description: 'Agent with Codemode structured tool outputs',
     },
   });
@@ -232,7 +235,7 @@ const AgentCodemodeInner: React.FC<{ onLogout: () => void }> = ({
         {/* Left: Chat */}
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Chat
-            protocol="ag-ui"
+            protocol="vercel-ai"
             baseUrl={agentBaseUrl}
             agentId={agentId}
             title="Codemode Agent"

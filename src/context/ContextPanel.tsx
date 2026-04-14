@@ -26,9 +26,8 @@ import {
   SegmentedControl,
 } from '@primer/react';
 import { Box } from '@datalayer/primer-addons';
-import { useQuery } from '@tanstack/react-query';
 import ReactECharts from 'echarts-for-react';
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 
 /**
  * Distribution child item for treemap
@@ -182,31 +181,13 @@ function getCategoryIcon(name: string) {
 
 type ViewMode = 'overview' | 'distribution' | 'history';
 
-const RETRY_INTERVAL_SECONDS = 5;
-
-/**
- * Get the API base URL for fetching context data.
- * If apiBase prop is provided, use it.
- * Otherwise, fall back to localhost for local development.
- */
-function getApiBase(apiBase?: string): string {
-  if (apiBase) {
-    return apiBase;
-  }
-  if (typeof window === 'undefined') {
-    return '';
-  }
-  const host = window.location.hostname;
-  return host === 'localhost' || host === '127.0.0.1'
-    ? 'http://127.0.0.1:8765'
-    : '';
-}
-
 export interface ContextPanelProps {
   /** Agent ID for fetching context details (required) */
   agentId: string;
   /** API base URL for fetching context data */
   apiBase?: string;
+  /** Live context snapshot pushed by websocket; skips internal polling when provided */
+  liveData?: ContextSnapshotResponse | null;
   /** Number of messages in conversation (from chat store) */
   messageCount?: number;
   /** Default view mode */
@@ -221,49 +202,20 @@ export interface ContextPanelProps {
 export function ContextPanel({
   agentId,
   apiBase,
+  liveData,
   messageCount = 0,
   defaultView = 'overview',
   chartHeight = '200px',
 }: ContextPanelProps) {
   const [viewMode, setViewMode] = useState<ViewMode>(defaultView);
   const [showDetails, setShowDetails] = useState(false);
-  const [retryCountdown, setRetryCountdown] = useState(RETRY_INTERVAL_SECONDS);
 
-  const {
-    data: snapshotData,
-    isLoading,
-    error,
-    refetch,
-  } = useQuery<ContextSnapshotResponse>({
-    queryKey: ['context-snapshot', agentId, apiBase],
-    queryFn: async () => {
-      const base = getApiBase(apiBase);
-      const response = await fetch(
-        `${base}/api/v1/configure/agents/${encodeURIComponent(agentId)}/context-snapshot`,
-      );
-      if (!response.ok) {
-        throw new Error('Failed to fetch context snapshot');
-      }
-      return response.json();
-    },
-    refetchInterval: RETRY_INTERVAL_SECONDS * 1000,
-    refetchOnMount: 'always',
-    staleTime: 0,
-  });
+  const hasLiveData = liveData !== undefined;
 
-  useEffect(() => {
-    if (!error) {
-      setRetryCountdown(RETRY_INTERVAL_SECONDS);
-      return;
-    }
-    setRetryCountdown(RETRY_INTERVAL_SECONDS);
-    const timer = window.setInterval(() => {
-      setRetryCountdown(prev =>
-        prev <= 1 ? RETRY_INTERVAL_SECONDS : prev - 1,
-      );
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [error]);
+  // REST polling removed — data comes exclusively via WS `agent.snapshot`.
+  const snapshotData = liveData;
+  const showLoading = !hasLiveData;
+  const hasError = false;
 
   // Build historic usage chart data from perRequestUsage
   const historyChartOption = useMemo(() => {
@@ -418,7 +370,7 @@ export function ContextPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshotData?.distribution]);
 
-  if (isLoading) {
+  if (showLoading) {
     return (
       <Box>
         <Heading
@@ -453,7 +405,7 @@ export function ContextPanel({
     );
   }
 
-  if (error || !snapshotData) {
+  if (hasError || !snapshotData) {
     return (
       <Box>
         <Heading
@@ -476,29 +428,9 @@ export function ContextPanel({
             borderColor: 'attention.muted',
           }}
         >
-          <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 2,
-            }}
-          >
-            <Text sx={{ fontSize: 1, color: 'attention.fg' }}>
-              Service not available for context usage. Retrying in{' '}
-              {retryCountdown} second{retryCountdown === 1 ? '' : 's'}...
-            </Text>
-            <Button
-              size="small"
-              variant="invisible"
-              onClick={() => {
-                setRetryCountdown(RETRY_INTERVAL_SECONDS);
-                void refetch();
-              }}
-            >
-              Retry now
-            </Button>
-          </Box>
+          <Text sx={{ fontSize: 1, color: 'attention.fg' }}>
+            Waiting for context data from WebSocket stream...
+          </Text>
         </Box>
       </Box>
     );
@@ -506,6 +438,14 @@ export function ContextPanel({
 
   const { totalTokens, contextWindow, sessionUsage, turnUsage, distribution } =
     snapshotData;
+
+  const sentMessageCount =
+    messageCount > 0
+      ? messageCount
+      : Math.max(
+          sessionUsage?.turns ?? 0,
+          snapshotData.perRequestUsage?.length > 0 ? 1 : 0,
+        );
   const hasDistributionData =
     distribution?.children && distribution.children.length > 0;
   const hasHistoryData =
@@ -531,9 +471,10 @@ export function ContextPanel({
         >
           Context Usage
         </Heading>
-        {messageCount > 0 && (
+        {sentMessageCount > 0 && (
           <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
-            {messageCount} {messageCount === 1 ? 'message' : 'messages'}
+            {sentMessageCount}{' '}
+            {sentMessageCount === 1 ? 'message sent' : 'messages sent'}
           </Text>
         )}
       </Box>

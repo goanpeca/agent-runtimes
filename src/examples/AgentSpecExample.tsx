@@ -10,22 +10,18 @@ import { PageLayout, IconButton } from '@primer/react';
 import { SidebarCollapseIcon, SidebarExpandIcon } from '@primer/octicons-react';
 import { AiAgentIcon } from '@datalayer/icons-react';
 import { Blankslate } from '@primer/react/experimental';
-import {
-  QueryClient,
-  QueryClientProvider,
-  useQuery,
-} from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Box } from '@datalayer/primer-addons';
-import { ThemedProvider } from './utils/themedProvider';
+import { AgentConfiguration } from '../config';
 import { Chat } from '../chat';
 import { DEFAULT_MODEL } from '../specs';
 import type { LibraryAgentSpec } from '../config/AgentConfiguration';
 import type { OAuthProvider, Identity } from '../identity';
-import { useAgentsStore } from './utils/examplesStore';
 import { useIdentity } from '../identity';
+import { useAgentsStore } from './utils/examplesStore';
+import { ThemedProvider } from './utils/themedProvider';
 import { isSpecSelection, getSpecId } from '../config/AgentConfiguration';
 import { MockFileBrowser, MainContent, Header } from './components';
-import { AgentConfiguration } from '../config';
 import { useChatStore } from '../stores';
 import type {
   AgentLibrary,
@@ -81,21 +77,10 @@ function useJupyterSandboxStatus(
   isConfigured: boolean,
   enableCodemode: boolean,
   useJupyterSandbox: boolean,
+  codemodeStatusData?: CodemodeStatusResponse | null,
 ): { message: string; variant: 'danger' | 'warning' } | undefined {
-  const { data: codemodeStatus } = useQuery<CodemodeStatusResponse>({
-    queryKey: ['codemode-status', baseUrl],
-    queryFn: async () => {
-      const response = await fetch(
-        `${baseUrl}/api/v1/configure/codemode-status`,
-      );
-      if (!response.ok) {
-        throw new Error('Failed to fetch codemode status');
-      }
-      return response.json();
-    },
-    enabled: isConfigured && enableCodemode && useJupyterSandbox,
-    refetchInterval: 10000, // Refresh every 10 seconds
-  });
+  // REST polling removed — data comes exclusively via WS `agent.snapshot`.
+  const codemodeStatus = codemodeStatusData;
 
   return React.useMemo(() => {
     if (!isConfigured || !enableCodemode || !useJupyterSandbox) {
@@ -642,7 +627,7 @@ const AgentRuntimeFormExample: React.FC<AgentRuntimeFormExampleProps> = ({
       setAllowDirectToolCalls(false);
       setEnableToolReranker(false);
       setUseJupyterSandbox(false);
-      setTransport('ag-ui');
+      setTransport('vercel-ai');
     } else if (isSpecSelection(agentId)) {
       // Populate form fields from the selected library spec
       const specId = getSpecId(agentId);

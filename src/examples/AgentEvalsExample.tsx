@@ -38,11 +38,12 @@ import {
 import { Box } from '@datalayer/primer-addons';
 import { ErrorView } from './components';
 import { ThemedProvider } from './utils/themedProvider';
+import { uniqueAgentId } from './utils/agentId';
 import { useSimpleAuthStore } from '@datalayer/core/lib/views/otel';
 import { SignInSimple } from '@datalayer/core/lib/views/iam';
 import { UserBadge } from '@datalayer/core/lib/views/profile';
 import { Chat } from '../chat';
-import { useAgents } from '../hooks/useAgents';
+import { useAgentRuntimes } from '../hooks/useAgentRuntimes';
 
 const queryClient = new QueryClient();
 
@@ -66,18 +67,20 @@ interface EvalRun {
 
 const AgentEvalsInner: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const { token } = useSimpleAuthStore();
+  const agentName = useRef(uniqueAgentId(AGENT_NAME)).current;
 
   const {
     runtime,
     status: runtimeStatus,
     isReady,
     error: hookError,
-  } = useAgents({
+  } = useAgentRuntimes({
     agentSpecId: AGENT_SPEC_ID,
     autoStart: true,
     agentConfig: {
-      name: AGENT_NAME,
-      protocol: 'ag-ui',
+      name: agentName,
+      model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+      protocol: 'vercel-ai',
       description: 'Agent with evaluation and quality scoring',
     },
   });
@@ -220,7 +223,7 @@ const AgentEvalsInner: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         {/* Left: Chat */}
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Chat
-            protocol="ag-ui"
+            protocol="vercel-ai"
             baseUrl={agentBaseUrl}
             agentId={agentId}
             title="Eval Agent"

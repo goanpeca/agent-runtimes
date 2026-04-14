@@ -12,25 +12,16 @@
  * @module components/context/CostTracker
  */
 
-import {
-  Box,
-  Heading,
-  Text,
-  ProgressBar,
-  Spinner,
-  Flash,
-  Label,
-} from '@primer/react';
+import { Box, Heading, Text, ProgressBar, Flash, Label } from '@primer/react';
 import { CreditCardIcon, AlertIcon } from '@primer/octicons-react';
-import { useQuery } from '@tanstack/react-query';
 
 /**
  * Cost usage response from the agent-runtimes API.
  */
 export interface CostUsageResponse {
   agentId: string;
-  /** Cost for the current run in USD */
-  currentRunCostUsd: number;
+  /** Cost for the last completed turn in USD */
+  lastTurnCostUsd: number;
   /** Total cumulative cost in USD */
   cumulativeCostUsd: number;
   /** Per-run budget limit (from guardrails) */
@@ -49,14 +40,10 @@ export interface CostUsageResponse {
     costUsd: number;
     requests: number;
   }>;
-}
-
-function getLocalApiBase(): string {
-  if (typeof window === 'undefined') return '';
-  const host = window.location.hostname;
-  return host === 'localhost' || host === '127.0.0.1'
-    ? 'http://127.0.0.1:8765'
-    : '';
+  /** Optional run traces with pricing resolution info */
+  runs?: Array<{
+    pricingResolved: boolean;
+  }>;
 }
 
 function formatUsd(amount: number): string {
@@ -76,51 +63,25 @@ export interface CostTrackerProps {
   agentId: string;
   /** Compact mode — show only the summary bar */
   compact?: boolean;
+  /** Live cost data pushed by websocket (single source of truth). */
+  liveData?: CostUsageResponse | null;
 }
 
 /**
  * Displays running cost and budget utilization for an agent.
  */
-export function CostTracker({ agentId, compact = false }: CostTrackerProps) {
-  const {
-    data: costData,
-    isLoading,
-    error,
-  } = useQuery<CostUsageResponse>({
-    queryKey: ['cost-usage', agentId],
-    queryFn: async () => {
-      const apiBase = getLocalApiBase();
-      const response = await fetch(
-        `${apiBase}/api/v1/configure/agents/${encodeURIComponent(agentId)}/cost-usage`,
-      );
-      if (!response.ok) throw new Error('Failed to fetch cost data');
-      return response.json();
-    },
-    refetchInterval: 5000,
-    staleTime: 0,
-  });
+export function CostTracker({
+  agentId: _agentId,
+  compact = false,
+  liveData,
+}: CostTrackerProps) {
+  const costData = liveData;
 
-  if (isLoading) {
-    return (
-      <Box
-        sx={{
-          p: 2,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 2,
-        }}
-      >
-        <Spinner size="small" />
-        <Text sx={{ fontSize: 1, color: 'fg.muted' }}>Loading cost…</Text>
-      </Box>
-    );
-  }
-
-  if (error || !costData) {
+  if (!costData) {
     return (
       <Box sx={{ p: 2 }}>
         <Text sx={{ fontSize: 1, color: 'fg.muted' }}>
-          Cost data unavailable
+          Waiting for websocket snapshot...
         </Text>
       </Box>
     );
@@ -131,13 +92,19 @@ export function CostTracker({ agentId, compact = false }: CostTrackerProps) {
       ? (costData.cumulativeCostUsd / costData.cumulativeBudgetUsd) * 100
       : null;
 
-  const runPercent =
+  const lastTurnCostUsd = costData.lastTurnCostUsd;
+  const lastTurnPercent =
     costData.perRunBudgetUsd != null && costData.perRunBudgetUsd > 0
-      ? (costData.currentRunCostUsd / costData.perRunBudgetUsd) * 100
+      ? (lastTurnCostUsd / costData.perRunBudgetUsd) * 100
       : null;
 
   const isOverBudget = cumulativePercent != null && cumulativePercent > 100;
   const isNearBudget = cumulativePercent != null && cumulativePercent > 80;
+  const hasUnresolvedPricing =
+    Array.isArray(costData.runs) &&
+    costData.runs.some(run => run.pricingResolved === false);
+  const displayUsd = (amount: number): string =>
+    hasUnresolvedPricing && amount === 0 ? '…' : formatUsd(amount);
 
   // Compact: single row summary
   if (compact) {
@@ -153,10 +120,12 @@ export function CostTracker({ agentId, compact = false }: CostTrackerProps) {
       >
         <CreditCardIcon size={14} />
         <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
-          Run: {formatUsd(costData.currentRunCostUsd)} | Total:{' '}
-          {formatUsd(costData.cumulativeCostUsd)}
+          Last turn: {displayUsd(lastTurnCostUsd)}
+          {costData.perRunBudgetUsd != null &&
+            ` (budget ${formatUsd(costData.perRunBudgetUsd)})`}
+          {' | '}Total: {displayUsd(costData.cumulativeCostUsd)}
           {costData.cumulativeBudgetUsd != null &&
-            ` / ${formatUsd(costData.cumulativeBudgetUsd)}`}
+            ` (budget ${formatUsd(costData.cumulativeBudgetUsd)})`}
         </Text>
         {isOverBudget && (
           <Label variant="danger" size="small">
@@ -190,6 +159,14 @@ export function CostTracker({ agentId, compact = false }: CostTrackerProps) {
         </Flash>
       )}
 
+      {hasUnresolvedPricing && costData.requestCount > 0 && (
+        <Flash variant="warning" sx={{ mb: 2 }}>
+          <AlertIcon size={16} />
+          Some model pricing could not be resolved yet, so cost may remain at …
+          even when requests/tokens are increasing.
+        </Flash>
+      )}
+
       <Box
         sx={{
           p: 3,
@@ -199,7 +176,7 @@ export function CostTracker({ agentId, compact = false }: CostTrackerProps) {
           borderColor: 'border.default',
         }}
       >
-        {/* Current run cost */}
+        {/* Last turn cost */}
         <Box sx={{ mb: 3 }}>
           <Box
             sx={{
@@ -208,20 +185,18 @@ export function CostTracker({ agentId, compact = false }: CostTrackerProps) {
               mb: 1,
             }}
           >
-            <Text sx={{ fontSize: 1, fontWeight: 'semibold' }}>
-              Current run
-            </Text>
+            <Text sx={{ fontSize: 1, fontWeight: 'semibold' }}>Last turn</Text>
             <Text sx={{ fontSize: 1 }}>
-              {formatUsd(costData.currentRunCostUsd)}
+              {displayUsd(lastTurnCostUsd)}
               {costData.perRunBudgetUsd != null &&
-                ` / ${formatUsd(costData.perRunBudgetUsd)}`}
+                ` (budget ${formatUsd(costData.perRunBudgetUsd)})`}
             </Text>
           </Box>
-          {runPercent != null && (
+          {lastTurnPercent != null && (
             <ProgressBar
-              progress={Math.min(runPercent, 100)}
+              progress={Math.min(lastTurnPercent, 100)}
               sx={{ height: 6 }}
-              bg={runPercent > 80 ? 'danger.emphasis' : 'accent.emphasis'}
+              bg={lastTurnPercent > 80 ? 'danger.emphasis' : 'accent.emphasis'}
             />
           )}
         </Box>
@@ -237,9 +212,9 @@ export function CostTracker({ agentId, compact = false }: CostTrackerProps) {
           >
             <Text sx={{ fontSize: 1, fontWeight: 'semibold' }}>Cumulative</Text>
             <Text sx={{ fontSize: 1 }}>
-              {formatUsd(costData.cumulativeCostUsd)}
+              {displayUsd(costData.cumulativeCostUsd)}
               {costData.cumulativeBudgetUsd != null &&
-                ` / ${formatUsd(costData.cumulativeBudgetUsd)}`}
+                ` (budget ${formatUsd(costData.cumulativeBudgetUsd)})`}
             </Text>
           </Box>
           {cumulativePercent != null && (
@@ -312,7 +287,10 @@ export function CostTracker({ agentId, compact = false }: CostTrackerProps) {
               >
                 <Text sx={{ fontSize: 0 }}>{m.model}</Text>
                 <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
-                  {formatUsd(m.costUsd)} ({m.requests} req)
+                  {displayUsd(m.costUsd)} ({m.requests} req)
+                  {hasUnresolvedPricing && m.costUsd === 0
+                    ? ' - pricing pending'
+                    : ''}
                 </Text>
               </Box>
             ))}

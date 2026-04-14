@@ -48,6 +48,7 @@ import {
 import { Box } from '@datalayer/primer-addons';
 import { ErrorView } from './components';
 import { ThemedProvider } from './utils/themedProvider';
+import { uniqueAgentId } from './utils/agentId';
 import { useSimpleAuthStore } from '@datalayer/core/lib/views/otel';
 import { SignInSimple } from '@datalayer/core/lib/views/iam';
 import { UserBadge } from '@datalayer/core/lib/views/profile';
@@ -65,6 +66,11 @@ import {
   useAIAgentsWebSocket,
 } from '../hooks';
 import type { AgentEvent } from '../types';
+import {
+  parseAgentStreamMessage,
+  type AgentStreamSnapshotPayload,
+  type AgentStreamToolApprovalPayload,
+} from '../types/stream';
 import { VercelAIAdapter } from '../protocols';
 import { createUserMessage } from '../types/messages';
 
@@ -96,21 +102,21 @@ interface TriggerRecord {
   source?: TriggerTab;
 }
 
-
-
 // ─── Inner component (rendered after auth) ─────────────────────────────────
 
 const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
   onLogout,
 }) => {
   const { token } = useSimpleAuthStore();
+  const agentName = useRef(uniqueAgentId(AGENT_NAME)).current;
+  const approvalAgentName = useRef(uniqueAgentId(APPROVAL_AGENT_NAME)).current;
 
   const [runtimeStatus, setRuntimeStatus] = useState<
     'launching' | 'ready' | 'error'
   >('launching');
   const [isReady, setIsReady] = useState(false);
   const [hookError, setHookError] = useState<string | null>(null);
-  const [agentId, setAgentId] = useState<string>(AGENT_NAME);
+  const [agentId, setAgentId] = useState<string>(agentName);
 
   const agentBaseUrl = DEFAULT_LOCAL_BASE_URL;
   const chatAuthToken: string | undefined = token === null ? undefined : token;
@@ -130,10 +136,16 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
   // Once trigger state
   const [isLaunchingOnce, setIsLaunchingOnce] = useState(false);
   const [onceFlash, setOnceFlash] = useState<string | null>(null);
-  const [lastOnceStartedAt, setLastOnceStartedAt] = useState<string | null>(null);
+  const [lastOnceStartedAt, setLastOnceStartedAt] = useState<string | null>(
+    null,
+  );
   const [hasTriggeredOnce, setHasTriggeredOnce] = useState(false);
-  const [streamedOnceOutput, setStreamedOnceOutput] = useState<string | null>(null);
-  const [streamedOnceEndedAt, setStreamedOnceEndedAt] = useState<string | null>(null);
+  const [streamedOnceOutput, setStreamedOnceOutput] = useState<string | null>(
+    null,
+  );
+  const [streamedOnceEndedAt, setStreamedOnceEndedAt] = useState<string | null>(
+    null,
+  );
 
   // Webhook state
   const [webhookUrl, setWebhookUrl] = useState<string | null>(null);
@@ -141,13 +153,17 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
   const [webhookEnabled, setWebhookEnabled] = useState(false);
 
   // Sidebar messages state
-  const [sidebarMessages, setSidebarMessages] = useState<Array<{
-    id: string;
-    role: string;
-    content: unknown;
-    createdAt?: string;
-  }>>([]);
-  const [sidebarMessagesError, setSidebarMessagesError] = useState<string | null>(null);
+  const [sidebarMessages, setSidebarMessages] = useState<
+    Array<{
+      id: string;
+      role: string;
+      content: unknown;
+      createdAt?: string;
+    }>
+  >([]);
+  const [sidebarMessagesError, setSidebarMessagesError] = useState<
+    string | null
+  >(null);
 
   // Event state
   const [eventTopic, setEventTopic] = useState('');
@@ -155,11 +171,12 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
   const [eventSubscribed, setEventSubscribed] = useState(false);
 
   // Approval agent state
-  const [approvalAgentId, setApprovalAgentId] = useState<string>(APPROVAL_AGENT_NAME);
+  const [approvalAgentId, setApprovalAgentId] =
+    useState<string>(approvalAgentName);
   const [approvalAgentReady, setApprovalAgentReady] = useState(false);
   const [isLaunchingApproval, setIsLaunchingApproval] = useState(false);
-  const [approvalFlash, setApprovalFlash] = useState<string | null>(null);
   const [hasTriggeredApproval, setHasTriggeredApproval] = useState(false);
+  const [approvalFlash, setApprovalFlash] = useState<string | null>(null);
 
   // Tool approval state
   interface ToolApprovalRequest {
@@ -172,18 +189,38 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
     status?: string;
     agent_id?: string;
   }
+
+  const toApprovalRequest = useCallback(
+    (payload: AgentStreamToolApprovalPayload): ToolApprovalRequest => ({
+      id: payload.id,
+      tool_name: payload.tool_name,
+      tool_args: payload.tool_args,
+      tool_call_id:
+        typeof payload.tool_args?.tool_call_id === 'string'
+          ? payload.tool_args.tool_call_id
+          : undefined,
+      note: payload.note ?? undefined,
+      created_at: payload.created_at,
+      status: payload.status,
+      agent_id: payload.agent_id,
+    }),
+    [],
+  );
   const [approvals, setApprovals] = useState<ToolApprovalRequest[]>([]);
   const [approvalLoading, setApprovalLoading] = useState<string | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
-  const [activeApproval, setActiveApproval] = useState<ToolApprovalRequest | null>(null);
+  const [activeApproval, setActiveApproval] =
+    useState<ToolApprovalRequest | null>(null);
 
   // Approval sidebar messages
-  const [approvalSidebarMessages, setApprovalSidebarMessages] = useState<Array<{
-    id: string;
-    role: string;
-    content: unknown;
-    createdAt?: string;
-  }>>([]);
+  const [approvalSidebarMessages, setApprovalSidebarMessages] = useState<
+    Array<{
+      id: string;
+      role: string;
+      content: unknown;
+      createdAt?: string;
+    }>
+  >([]);
   const approvalStreamRef = useRef<{
     adapter: VercelAIAdapter;
     unsubscribe: () => void;
@@ -199,6 +236,67 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
   // WebSocket for real-time event updates
   useAIAgentsWebSocket({
     channels: agentId ? [`agent:${agentId}`] : [],
+  });
+
+  const handleApprovalStreamMessage = useCallback(
+    (message: { raw?: unknown }) => {
+      try {
+        const stream = parseAgentStreamMessage(message?.raw ?? message);
+        if (!stream) {
+          return;
+        }
+
+        if (stream.type === 'agent.snapshot') {
+          const payload =
+            stream.payload as unknown as AgentStreamSnapshotPayload;
+          const nextApprovals = (payload.approvals ?? [])
+            .filter(
+              approval =>
+                !approval.agent_id || approval.agent_id === approvalAgentId,
+            )
+            .map(toApprovalRequest);
+          setApprovals(nextApprovals);
+          return;
+        }
+
+        if (stream.type === 'tool_approval_created') {
+          const approval = toApprovalRequest(
+            stream.payload as unknown as AgentStreamToolApprovalPayload,
+          );
+          if (approval.agent_id && approval.agent_id !== approvalAgentId) {
+            return;
+          }
+          setApprovals(prev => {
+            const next = prev.filter(item => item.id !== approval.id);
+            next.unshift(approval);
+            return next;
+          });
+          return;
+        }
+
+        if (
+          stream.type === 'tool_approval_approved' ||
+          stream.type === 'tool_approval_rejected'
+        ) {
+          const approval =
+            stream.payload as unknown as AgentStreamToolApprovalPayload;
+          setApprovals(prev => prev.filter(item => item.id !== approval.id));
+        }
+      } catch {
+        // Ignore malformed stream payloads.
+      }
+    },
+    [approvalAgentId, toApprovalRequest],
+  );
+
+  const approvalSocket = useAIAgentsWebSocket({
+    enabled: isReady && approvalAgentReady && Boolean(agentBaseUrl),
+    baseUrl: agentBaseUrl,
+    path: '/api/v1/tool-approvals/ws',
+    queryParams: { agent_id: approvalAgentId },
+    onMessage: handleApprovalStreamMessage,
+    reconnectDelayMs: attempt =>
+      Math.min(1000 * 2 ** Math.max(0, attempt - 1), 10000),
   });
 
   // Authenticated fetch helper (for sidecar endpoints)
@@ -229,7 +327,7 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
         const response = await authFetch(`${agentBaseUrl}/api/v1/agents`, {
           method: 'POST',
           body: JSON.stringify({
-            name: AGENT_NAME,
+            name: agentName,
             description: 'Agent with cron, webhook, event, and manual triggers',
             agent_library: 'pydantic-ai',
             transport: 'vercel-ai',
@@ -238,11 +336,11 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
           }),
         });
 
-        let resolvedAgentId = AGENT_NAME;
+        let resolvedAgentId = agentName;
 
         if (response.ok) {
           const data = await response.json();
-          resolvedAgentId = data?.id || AGENT_NAME;
+          resolvedAgentId = data?.id || agentName;
         } else {
           const contentType = response.headers.get('content-type') || '';
           let detail = '';
@@ -294,8 +392,6 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
   //       Currently these endpoints don't exist on either the local
   //       agent-runtimes server or the ai-agents service.
 
-
-
   const upsertSidebarMessage = useCallback(
     (
       setMessages: React.Dispatch<
@@ -344,7 +440,10 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
       >,
       setError: React.Dispatch<React.SetStateAction<string | null>>,
       options?: { keepAliveForApproval?: boolean },
-    ): Promise<{ finalAssistantText: string | null; pendingApproval: boolean }> => {
+    ): Promise<{
+      finalAssistantText: string | null;
+      pendingApproval: boolean;
+    }> => {
       const endpoint = `${agentBaseUrl}/api/v1/vercel-ai/${encodeURIComponent(targetAgentId)}`;
       if (options?.keepAliveForApproval && approvalStreamRef.current) {
         approvalStreamRef.current.unsubscribe();
@@ -450,7 +549,7 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
         const response = await authFetch(`${agentBaseUrl}/api/v1/agents`, {
           method: 'POST',
           body: JSON.stringify({
-            name: APPROVAL_AGENT_NAME,
+            name: approvalAgentName,
             description: 'Agent with once trigger and tool approval',
             agent_library: 'pydantic-ai',
             transport: 'vercel-ai',
@@ -459,11 +558,11 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
           }),
         });
 
-        let resolvedId = APPROVAL_AGENT_NAME;
+        let resolvedId = approvalAgentName;
 
         if (response.ok) {
           const data = await response.json();
-          resolvedId = data?.id || APPROVAL_AGENT_NAME;
+          resolvedId = data?.id || approvalAgentName;
         } else {
           const contentType = response.headers.get('content-type') || '';
           let detail = '';
@@ -491,51 +590,25 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
     };
 
     void createApprovalAgent();
-    return () => { isCancelled = true; };
+    return () => {
+      isCancelled = true;
+    };
   }, [isReady, agentBaseUrl, authFetch]);
-
-  // ── Poll tool approvals ─────────────────────────────────────────────────
-
-  const pollApprovals = useCallback(async () => {
-    if (!approvalAgentReady) return;
-    try {
-      const res = await authFetch(`${agentBaseUrl}/api/v1/tool-approvals`);
-      if (!res.ok) return;
-      const data = await res.json();
-      const all = Array.isArray(data) ? data : (data.approvals ?? data.requests ?? []);
-      const pending = all.filter(
-        (a: any) => a.status === 'pending' && (!a.agent_id || a.agent_id === approvalAgentId),
-      );
-      setApprovals(pending);
-    } catch {
-      // Non-fatal
-    }
-  }, [approvalAgentReady, agentBaseUrl, approvalAgentId, authFetch]);
-
-  useEffect(() => {
-    if (!hasTriggeredApproval) return;
-    void pollApprovals();
-    const interval = setInterval(pollApprovals, 2000);
-    return () => clearInterval(interval);
-  }, [hasTriggeredApproval, pollApprovals]);
 
   // Approval sidebar messages are populated from live Vercel stream events.
 
   // ── Approve / Reject handlers ───────────────────────────────────────────
 
-  const handleApprove = useCallback(async (requestId: string) => {
-    setApprovalLoading(requestId);
-    setApprovalError(null);
-    try {
-      const approval = approvals.find(a => a.id === requestId);
-      const res = await authFetch(
-        `${agentBaseUrl}/api/v1/tool-approvals/${requestId}/approve`,
-        { method: 'POST', body: JSON.stringify({}) },
-      );
-      if (!res.ok) {
-        throw new Error(`Approve failed (${res.status})`);
-      }
-      if (approval?.tool_call_id && approvalStreamRef.current) {
+  const handleApprove = useCallback(
+    async (requestId: string) => {
+      setApprovalLoading(requestId);
+      setApprovalError(null);
+      try {
+        const approval = approvals.find(a => a.id === requestId);
+        if (!approval?.tool_call_id || !approvalStreamRef.current) {
+          throw new Error('Approval stream is not active for this request');
+        }
+
         await approvalStreamRef.current.adapter.sendToolResult(
           approval.tool_call_id,
           {
@@ -551,29 +624,28 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
         approvalStreamRef.current.unsubscribe();
         approvalStreamRef.current.adapter.disconnect();
         approvalStreamRef.current = null;
+        setApprovals(prev => prev.filter(a => a.id !== requestId));
+      } catch (error) {
+        setApprovalError(
+          error instanceof Error ? error.message : 'Failed to approve',
+        );
+      } finally {
+        setApprovalLoading(null);
       }
-      setApprovals(prev => prev.filter(a => a.id !== requestId));
-      void pollApprovals();
-    } catch (error) {
-      setApprovalError(error instanceof Error ? error.message : 'Failed to approve');
-    } finally {
-      setApprovalLoading(null);
-    }
-  }, [agentBaseUrl, authFetch, pollApprovals, approvals]);
+    },
+    [approvals],
+  );
 
-  const handleReject = useCallback(async (requestId: string, note?: string) => {
-    setApprovalLoading(requestId);
-    setApprovalError(null);
-    try {
-      const approval = approvals.find(a => a.id === requestId);
-      const res = await authFetch(
-        `${agentBaseUrl}/api/v1/tool-approvals/${requestId}/reject`,
-        { method: 'POST', body: JSON.stringify(note ? { note } : {}) },
-      );
-      if (!res.ok) {
-        throw new Error(`Reject failed (${res.status})`);
-      }
-      if (approval?.tool_call_id && approvalStreamRef.current) {
+  const handleReject = useCallback(
+    async (requestId: string, note?: string) => {
+      setApprovalLoading(requestId);
+      setApprovalError(null);
+      try {
+        const approval = approvals.find(a => a.id === requestId);
+        if (!approval?.tool_call_id || !approvalStreamRef.current) {
+          throw new Error('Approval stream is not active for this request');
+        }
+
         await approvalStreamRef.current.adapter.sendToolResult(
           approval.tool_call_id,
           {
@@ -589,25 +661,27 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
         approvalStreamRef.current.unsubscribe();
         approvalStreamRef.current.adapter.disconnect();
         approvalStreamRef.current = null;
+        setApprovals(prev => prev.filter(a => a.id !== requestId));
+      } catch (error) {
+        setApprovalError(
+          error instanceof Error ? error.message : 'Failed to reject',
+        );
+      } finally {
+        setApprovalLoading(null);
       }
-      setApprovals(prev => prev.filter(a => a.id !== requestId));
-      void pollApprovals();
-    } catch (error) {
-      setApprovalError(error instanceof Error ? error.message : 'Failed to reject');
-    } finally {
-      setApprovalLoading(null);
-    }
-  }, [agentBaseUrl, authFetch, pollApprovals, approvals]);
+    },
+    [approvals],
+  );
 
   // ── Launch once trigger with approval ────────────────────────────────────
 
   const handleLaunchOnceApproval = useCallback(async () => {
     if (!agentBaseUrl || !approvalAgentReady) return;
     setIsLaunchingApproval(true);
+    setHasTriggeredApproval(true);
     setApprovalFlash(null);
     setApprovalSidebarMessages([]);
     setSidebarMessagesError(null);
-    setHasTriggeredApproval(true);
     const runId = `once-approval-${Date.now()}`;
     const startTime = new Date().toISOString();
     setTriggerHistory(prev => [
@@ -649,17 +723,14 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
     } catch {
       setApprovalFlash('Network error');
       setTriggerHistory(prev =>
-        prev.map(r => r.id === runId ? { ...r, status: 'failure' as const } : r),
+        prev.map(r =>
+          r.id === runId ? { ...r, status: 'failure' as const } : r,
+        ),
       );
     } finally {
       setIsLaunchingApproval(false);
     }
-  }, [
-    agentBaseUrl,
-    approvalAgentReady,
-    approvalAgentId,
-    streamRunMessages,
-  ]);
+  }, [agentBaseUrl, approvalAgentReady, approvalAgentId, streamRunMessages]);
 
   // ── Pending approvals for banner/dialog ──────────────────────────────────
 
@@ -928,6 +999,15 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
         <Heading as="h3" sx={{ fontSize: 2, flex: 1 }}>
           Triggers — {agentId}
         </Heading>
+        <Label
+          variant={
+            approvalSocket.connectionState === 'connected'
+              ? 'success'
+              : 'secondary'
+          }
+        >
+          Approvals WS: {approvalSocket.connectionState}
+        </Label>
         {token && <UserBadge token={token} variant="small" />}
         <Button
           size="small"
@@ -1129,7 +1209,9 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
                 disabled={isLaunchingApproval || !approvalAgentReady}
                 sx={{ width: '100%', mt: 2 }}
               >
-                {isLaunchingApproval ? 'Launching…' : 'Launch Once with Approval'}
+                {isLaunchingApproval
+                  ? 'Launching…'
+                  : 'Launch Once with Approval'}
               </Button>
 
               {onceFlash && (
@@ -1156,530 +1238,650 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
 
               {/* ── Generated Output ───────────────────────────────── */}
               {hasTriggeredOnce && (
-              <>
-              <Heading as="h4" sx={{ fontSize: 1, mt: 3, mb: 2 }}>
-                Generated Output
-              </Heading>
+                <>
+                  <Heading as="h4" sx={{ fontSize: 1, mt: 3, mb: 2 }}>
+                    Generated Output
+                  </Heading>
 
-              {(() => {
-                const outputEvent = lastOnceStartedAt
-                  ? [...agentEvents]
-                      .filter(
-                        e =>
-                          e.kind === 'agent-output' &&
-                          new Date(e.created_at).getTime() >=
-                            new Date(lastOnceStartedAt).getTime() - 5000,
-                      )
-                      .sort(
-                        (a, b) =>
-                          new Date(b.created_at).getTime() -
-                          new Date(a.created_at).getTime(),
-                      )[0]
-                  : undefined;
+                  {(() => {
+                    const outputEvent = lastOnceStartedAt
+                      ? [...agentEvents]
+                          .filter(
+                            e =>
+                              e.kind === 'agent-output' &&
+                              new Date(e.created_at).getTime() >=
+                                new Date(lastOnceStartedAt).getTime() - 5000,
+                          )
+                          .sort(
+                            (a, b) =>
+                              new Date(b.created_at).getTime() -
+                              new Date(a.created_at).getTime(),
+                          )[0]
+                      : undefined;
 
-                const hasStreamFallback =
-                  !outputEvent && !isLaunchingOnce && streamedOnceOutput !== null;
+                    const hasStreamFallback =
+                      !outputEvent &&
+                      !isLaunchingOnce &&
+                      streamedOnceOutput !== null;
 
-                if (!outputEvent && !hasStreamFallback) {
-                  return (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
-                      <Spinner size="small" />
-                      <Text sx={{ color: 'fg.muted', fontSize: 0 }}>
-                        Waiting for agent output…
-                      </Text>
-                    </Box>
-                  );
-                }
-
-                const p = outputEvent?.payload as Record<string, any> | undefined;
-                const outputText = outputEvent
-                  ? (p?.outputs ? String(p.outputs) : '')
-                  : (streamedOnceOutput ?? '');
-                const exitStatus = outputEvent ? p?.exit_status : 'completed';
-                const durationMs = outputEvent
-                  ? p?.duration_ms
-                  : (lastOnceStartedAt && streamedOnceEndedAt
-                    ? new Date(streamedOnceEndedAt).getTime() -
-                      new Date(lastOnceStartedAt).getTime()
-                    : undefined);
-                const endedAt = outputEvent ? p?.ended_at : streamedOnceEndedAt;
-
-                return (
-                  <Box
-                    sx={{
-                      mb: 2,
-                      border: '1px solid',
-                      borderColor:
-                        exitStatus === 'error'
-                          ? 'danger.muted'
-                          : 'success.muted',
-                      borderRadius: 2,
-                      overflow: 'hidden',
-                    }}
-                  >
-                    {/* Header bar */}
-                    <Box
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1,
-                        px: 2,
-                        py: 1,
-                        bg:
-                          exitStatus === 'error'
-                            ? 'danger.subtle'
-                            : 'success.subtle',
-                        borderBottom: '1px solid',
-                        borderColor:
-                          exitStatus === 'error'
-                            ? 'danger.muted'
-                            : 'success.muted',
-                      }}
-                    >
-                      <Label
-                        variant={
-                          exitStatus === 'error' ? 'danger' : 'success'
-                        }
-                        size="small"
-                      >
-                        {exitStatus ?? 'completed'}
-                      </Label>
-                      {durationMs != null && (
-                        <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
-                          {(Number(durationMs) / 1000).toFixed(1)}s
-                        </Text>
-                      )}
-                      {endedAt && (
-                        <Text
+                    if (!outputEvent && !hasStreamFallback) {
+                      return (
+                        <Box
                           sx={{
-                            fontSize: 0,
-                            color: 'fg.muted',
-                            ml: 'auto',
-                            whiteSpace: 'nowrap',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 2,
+                            mb: 2,
                           }}
                         >
-                          {new Date(endedAt).toLocaleString()}
-                        </Text>
-                      )}
-                      <Button
-                        size="small"
-                        variant="invisible"
-                        sx={{ p: 1 }}
-                        onClick={() =>
-                          navigator.clipboard.writeText(outputText)
-                        }
-                      >
-                        <CopyIcon size={12} />
-                      </Button>
-                    </Box>
-                    {/* Output body */}
-                    <Box
-                      sx={{
-                        p: 2,
-                        bg: 'canvas.default',
-                        maxHeight: 300,
-                        overflow: 'auto',
-                      }}
-                    >
-                      <Text
+                          <Spinner size="small" />
+                          <Text sx={{ color: 'fg.muted', fontSize: 0 }}>
+                            Waiting for agent output…
+                          </Text>
+                        </Box>
+                      );
+                    }
+
+                    const p = outputEvent?.payload as
+                      | Record<string, any>
+                      | undefined;
+                    const outputText = outputEvent
+                      ? p?.outputs
+                        ? String(p.outputs)
+                        : ''
+                      : (streamedOnceOutput ?? '');
+                    const exitStatus = outputEvent
+                      ? p?.exit_status
+                      : 'completed';
+                    const durationMs = outputEvent
+                      ? p?.duration_ms
+                      : lastOnceStartedAt && streamedOnceEndedAt
+                        ? new Date(streamedOnceEndedAt).getTime() -
+                          new Date(lastOnceStartedAt).getTime()
+                        : undefined;
+                    const endedAt = outputEvent
+                      ? p?.ended_at
+                      : streamedOnceEndedAt;
+
+                    return (
+                      <Box
                         sx={{
-                          fontSize: 0,
-                          color: 'fg.default',
-                          display: 'block',
-                          whiteSpace: 'pre-wrap',
-                          wordBreak: 'break-word',
-                          fontFamily: 'mono',
+                          mb: 2,
+                          border: '1px solid',
+                          borderColor:
+                            exitStatus === 'error'
+                              ? 'danger.muted'
+                              : 'success.muted',
+                          borderRadius: 2,
+                          overflow: 'hidden',
                         }}
                       >
-                        {outputText || '(empty output)'}
-                      </Text>
-                    </Box>
-                  </Box>
-                );
-              })()}
-              </>
+                        {/* Header bar */}
+                        <Box
+                          sx={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 1,
+                            px: 2,
+                            py: 1,
+                            bg:
+                              exitStatus === 'error'
+                                ? 'danger.subtle'
+                                : 'success.subtle',
+                            borderBottom: '1px solid',
+                            borderColor:
+                              exitStatus === 'error'
+                                ? 'danger.muted'
+                                : 'success.muted',
+                          }}
+                        >
+                          <Label
+                            variant={
+                              exitStatus === 'error' ? 'danger' : 'success'
+                            }
+                            size="small"
+                          >
+                            {exitStatus ?? 'completed'}
+                          </Label>
+                          {durationMs != null && (
+                            <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
+                              {(Number(durationMs) / 1000).toFixed(1)}s
+                            </Text>
+                          )}
+                          {endedAt && (
+                            <Text
+                              sx={{
+                                fontSize: 0,
+                                color: 'fg.muted',
+                                ml: 'auto',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {new Date(endedAt).toLocaleString()}
+                            </Text>
+                          )}
+                          <Button
+                            size="small"
+                            variant="invisible"
+                            sx={{ p: 1 }}
+                            onClick={() =>
+                              navigator.clipboard.writeText(outputText)
+                            }
+                          >
+                            <CopyIcon size={12} />
+                          </Button>
+                        </Box>
+                        {/* Output body */}
+                        <Box
+                          sx={{
+                            p: 2,
+                            bg: 'canvas.default',
+                            maxHeight: 300,
+                            overflow: 'auto',
+                          }}
+                        >
+                          <Text
+                            sx={{
+                              fontSize: 0,
+                              color: 'fg.default',
+                              display: 'block',
+                              whiteSpace: 'pre-wrap',
+                              wordBreak: 'break-word',
+                              fontFamily: 'mono',
+                            }}
+                          >
+                            {outputText || '(empty output)'}
+                          </Text>
+                        </Box>
+                      </Box>
+                    );
+                  })()}
+                </>
               )}
 
               {/* ── Streaming Messages ─────────────────────────────────── */}
               {hasTriggeredOnce && (
-              <>
-              <Heading as="h4" sx={{ fontSize: 1, mt: 3, mb: 2 }}>
-                Streaming Messages
-                {isLaunchingOnce && (
-                  <Spinner
-                    size="small"
-                    sx={{
-                      ml: 2,
-                      verticalAlign: 'middle',
-                      width: 14,
-                      height: 14,
-                      minWidth: 14,
-                      minHeight: 14,
-                    }}
-                  />
-                )}
-              </Heading>
-
-              {sidebarMessagesError ? (
-                <Flash variant="danger" sx={{ fontSize: 0, mb: 2 }}>
-                  {sidebarMessagesError}
-                </Flash>
-              ) : sidebarMessages.filter(msg => msg.role !== 'user').length === 0 ? (
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
-                  <Spinner
-                    size="small"
-                    sx={{ width: 16, height: 16, minWidth: 16, minHeight: 16 }}
-                  />
-                  <Text sx={{ color: 'fg.muted', fontSize: 0 }}>
-                    Waiting for streaming messages…
-                  </Text>
-                </Box>
-              ) : (
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mb: 2 }}>
-                  {sidebarMessages
-                    .slice()
-                    .filter(msg => msg.role !== 'user')
-                    .sort((a, b) => {
-                      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-                      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-                      return tb - ta;
-                    })
-                    .slice(0, 10)
-                    .map(msg => {
-                      const content = typeof msg.content === 'string'
-                        ? msg.content
-                        : JSON.stringify(msg.content);
-                      return (
-                        <Box
-                          key={`once-msg-${msg.id}`}
-                          sx={{
-                            p: 2,
-                            bg: 'canvas.subtle',
-                            borderRadius: 2,
-                            border: '1px solid',
-                            borderColor: 'border.default',
-                          }}
-                        >
-                          <Box
-                            sx={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 1,
-                              mb: 1,
-                            }}
-                          >
-                            <Label
-                              size="small"
-                              variant={
-                                msg.role === 'assistant'
-                                  ? 'accent'
-                                  : msg.role === 'tool'
-                                    ? 'success'
-                                    : 'secondary'
-                              }
-                            >
-                              {msg.role}
-                            </Label>
-                            {msg.createdAt && (
-                              <Text
-                                sx={{
-                                  fontSize: 0,
-                                  color: 'fg.muted',
-                                  marginLeft: 'auto',
-                                  whiteSpace: 'nowrap',
-                                }}
-                              >
-                                {new Date(msg.createdAt).toLocaleTimeString()}
-                              </Text>
-                            )}
-                          </Box>
-                          <Text
-                            sx={{
-                              fontSize: 0,
-                              color: 'fg.default',
-                              display: 'block',
-                              whiteSpace: 'pre-wrap',
-                              wordBreak: 'break-word',
-                            }}
-                          >
-                            {content.length > 320
-                              ? `${content.slice(0, 320)}…`
-                              : content}
-                          </Text>
-                        </Box>
-                      );
-                    })}
-                </Box>
-              )}
-              </>
-              )}
-
-              {/* ── Approval Pending Queue ──────────────────────────────── */}
-              {hasTriggeredApproval && approvals.length > 0 && (
-              <>
-              <Heading as="h4" sx={{ fontSize: 1, mt: 3, mb: 2 }}>
-                Pending Tool Approvals
-              </Heading>
-              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mb: 2 }}>
-                {approvals.map(a => (
-                  <Box
-                    key={a.id}
-                    sx={{
-                      p: 2,
-                      border: '1px solid',
-                      borderColor: 'attention.muted',
-                      borderRadius: 2,
-                      bg: 'attention.subtle',
-                    }}
-                  >
-                    <Text sx={{ fontWeight: 600, fontSize: 1, display: 'block', mb: 1 }}>
-                      🛡️ {a.tool_name}
-                    </Text>
-                    {a.tool_args && (
-                      <Text sx={{ fontSize: 0, color: 'fg.muted', display: 'block', mb: 2, fontFamily: 'mono' }}>
-                        {JSON.stringify(a.tool_args)}
-                      </Text>
-                    )}
-                    <Box sx={{ display: 'flex', gap: 1 }}>
-                      <Button
-                        size="small"
-                        variant="primary"
-                        onClick={() => void handleApprove(a.id)}
-                        disabled={approvalLoading === a.id}
-                      >
-                        {approvalLoading === a.id ? 'Approving…' : 'Approve'}
-                      </Button>
-                      <Button
-                        size="small"
-                        variant="danger"
-                        onClick={() => void handleReject(a.id, 'Rejected from trigger panel')}
-                        disabled={approvalLoading === a.id}
-                      >
-                        Reject
-                      </Button>
-                    </Box>
-                  </Box>
-                ))}
-              </Box>
-              </>
-              )}
-
-              {/* ── Approval Streaming Messages ─────────────────────────── */}
-              {hasTriggeredApproval && (
-              <>
-              <Heading as="h4" sx={{ fontSize: 1, mt: 3, mb: 2 }}>
-                Approval Agent Messages
-                {isLaunchingApproval && (
-                  <Spinner
-                    size="small"
-                    sx={{
-                      ml: 2,
-                      verticalAlign: 'middle',
-                      width: 14,
-                      height: 14,
-                      minWidth: 14,
-                      minHeight: 14,
-                    }}
-                  />
-                )}
-              </Heading>
-
-              {/* ── Approval Generated Output ───────────────────────── */}
-              {hasTriggeredApproval && (
-              <>
-              <Heading as="h4" sx={{ fontSize: 1, mt: 3, mb: 2 }}>
-                Generated Output
-              </Heading>
-
-              {(() => {
-                const latestAssistantOutput = approvalSidebarMessages
-                  .filter(msg => msg.role === 'assistant')
-                  .sort((a, b) => {
-                    const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-                    const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-                    return tb - ta;
-                  })[0];
-
-                if (!latestAssistantOutput) {
-                  return (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
+                <>
+                  <Heading as="h4" sx={{ fontSize: 1, mt: 3, mb: 2 }}>
+                    Streaming Messages
+                    {isLaunchingOnce && (
                       <Spinner
                         size="small"
-                        sx={{ width: 16, height: 16, minWidth: 16, minHeight: 16 }}
+                        sx={{
+                          ml: 2,
+                          verticalAlign: 'middle',
+                          width: 14,
+                          height: 14,
+                          minWidth: 14,
+                          minHeight: 14,
+                        }}
                       />
-                      <Text sx={{ color: 'fg.muted', fontSize: 0 }}>
-                        Waiting for agent output…
-                      </Text>
-                    </Box>
-                  );
-                }
+                    )}
+                  </Heading>
 
-                const outputText =
-                  typeof latestAssistantOutput.content === 'string'
-                    ? latestAssistantOutput.content
-                    : JSON.stringify(latestAssistantOutput.content);
-
-                return (
-                  <Box
-                    sx={{
-                      mb: 2,
-                      border: '1px solid',
-                      borderColor: 'success.muted',
-                      borderRadius: 2,
-                      overflow: 'hidden',
-                    }}
-                  >
+                  {sidebarMessagesError ? (
+                    <Flash variant="danger" sx={{ fontSize: 0, mb: 2 }}>
+                      {sidebarMessagesError}
+                    </Flash>
+                  ) : sidebarMessages.filter(msg => msg.role !== 'user')
+                      .length === 0 ? (
                     <Box
                       sx={{
                         display: 'flex',
                         alignItems: 'center',
-                        gap: 1,
-                        px: 2,
-                        py: 1,
-                        bg: 'success.subtle',
-                        borderBottom: '1px solid',
-                        borderColor: 'success.muted',
+                        gap: 2,
+                        mb: 2,
                       }}
                     >
-                      <Label variant="success" size="small">
-                        completed
-                      </Label>
-                      {latestAssistantOutput.createdAt && (
-                        <Text
-                          sx={{
-                            fontSize: 0,
-                            color: 'fg.muted',
-                            ml: 'auto',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
-                          {new Date(latestAssistantOutput.createdAt).toLocaleString()}
-                        </Text>
-                      )}
-                      <Button
+                      <Spinner
                         size="small"
-                        variant="invisible"
-                        sx={{ p: 1 }}
-                        onClick={() => navigator.clipboard.writeText(outputText)}
-                      >
-                        <CopyIcon size={12} />
-                      </Button>
-                    </Box>
-                    <Box
-                      sx={{
-                        p: 2,
-                        bg: 'canvas.default',
-                        maxHeight: 300,
-                        overflow: 'auto',
-                      }}
-                    >
-                      <Text
                         sx={{
-                          fontSize: 0,
-                          color: 'fg.default',
-                          display: 'block',
-                          whiteSpace: 'pre-wrap',
-                          wordBreak: 'break-word',
-                          fontFamily: 'mono',
+                          width: 16,
+                          height: 16,
+                          minWidth: 16,
+                          minHeight: 16,
                         }}
-                      >
-                        {outputText || '(empty output)'}
+                      />
+                      <Text sx={{ color: 'fg.muted', fontSize: 0 }}>
+                        Waiting for streaming messages…
                       </Text>
                     </Box>
-                  </Box>
-                );
-              })()}
-              </>
-              )}
-
-              {approvalSidebarMessages.filter(msg => msg.role !== 'user').length === 0 ? (
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 2 }}>
-                  <Spinner
-                    size="small"
-                    sx={{ width: 16, height: 16, minWidth: 16, minHeight: 16 }}
-                  />
-                  <Text sx={{ color: 'fg.muted', fontSize: 0 }}>
-                    Waiting for approval agent messages…
-                  </Text>
-                </Box>
-              ) : (
-                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, mb: 2 }}>
-                  {approvalSidebarMessages
-                    .slice()
-                    .filter(msg => msg.role !== 'user')
-                    .sort((a, b) => {
-                      const ta = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-                      const tb = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-                      return tb - ta;
-                    })
-                    .slice(0, 10)
-                    .map(msg => {
-                      const content = typeof msg.content === 'string'
-                        ? msg.content
-                        : JSON.stringify(msg.content);
-                      return (
-                        <Box
-                          key={`approval-msg-${msg.id}`}
-                          sx={{
-                            p: 2,
-                            bg: 'canvas.subtle',
-                            borderRadius: 2,
-                            border: '1px solid',
-                            borderColor: 'border.default',
-                          }}
-                        >
-                          <Box
-                            sx={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 1,
-                              mb: 1,
-                            }}
-                          >
-                            <Label
-                              size="small"
-                              variant={
-                                msg.role === 'assistant'
-                                  ? 'accent'
-                                  : msg.role === 'tool'
-                                    ? 'success'
-                                    : 'secondary'
-                              }
+                  ) : (
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 2,
+                        mb: 2,
+                      }}
+                    >
+                      {sidebarMessages
+                        .slice()
+                        .filter(msg => msg.role !== 'user')
+                        .sort((a, b) => {
+                          const ta = a.createdAt
+                            ? new Date(a.createdAt).getTime()
+                            : 0;
+                          const tb = b.createdAt
+                            ? new Date(b.createdAt).getTime()
+                            : 0;
+                          return tb - ta;
+                        })
+                        .slice(0, 10)
+                        .map(msg => {
+                          const content =
+                            typeof msg.content === 'string'
+                              ? msg.content
+                              : JSON.stringify(msg.content);
+                          return (
+                            <Box
+                              key={`once-msg-${msg.id}`}
+                              sx={{
+                                p: 2,
+                                bg: 'canvas.subtle',
+                                borderRadius: 2,
+                                border: '1px solid',
+                                borderColor: 'border.default',
+                              }}
                             >
-                              {msg.role}
-                            </Label>
-                            {msg.createdAt && (
+                              <Box
+                                sx={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 1,
+                                  mb: 1,
+                                }}
+                              >
+                                <Label
+                                  size="small"
+                                  variant={
+                                    msg.role === 'assistant'
+                                      ? 'accent'
+                                      : msg.role === 'tool'
+                                        ? 'success'
+                                        : 'secondary'
+                                  }
+                                >
+                                  {msg.role}
+                                </Label>
+                                {msg.createdAt && (
+                                  <Text
+                                    sx={{
+                                      fontSize: 0,
+                                      color: 'fg.muted',
+                                      marginLeft: 'auto',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    {new Date(
+                                      msg.createdAt,
+                                    ).toLocaleTimeString()}
+                                  </Text>
+                                )}
+                              </Box>
                               <Text
                                 sx={{
                                   fontSize: 0,
-                                  color: 'fg.muted',
-                                  marginLeft: 'auto',
-                                  whiteSpace: 'nowrap',
+                                  color: 'fg.default',
+                                  display: 'block',
+                                  whiteSpace: 'pre-wrap',
+                                  wordBreak: 'break-word',
                                 }}
                               >
-                                {new Date(msg.createdAt).toLocaleTimeString()}
+                                {content.length > 320
+                                  ? `${content.slice(0, 320)}…`
+                                  : content}
                               </Text>
-                            )}
-                          </Box>
+                            </Box>
+                          );
+                        })}
+                    </Box>
+                  )}
+                </>
+              )}
+
+              {/* ── Approval Pending Queue ──────────────────────────────── */}
+              {hasTriggeredApproval && approvals.length > 0 && (
+                <>
+                  <Heading as="h4" sx={{ fontSize: 1, mt: 3, mb: 2 }}>
+                    Pending Tool Approvals
+                  </Heading>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 2,
+                      mb: 2,
+                    }}
+                  >
+                    {approvals.map(a => (
+                      <Box
+                        key={a.id}
+                        sx={{
+                          p: 2,
+                          border: '1px solid',
+                          borderColor: 'attention.muted',
+                          borderRadius: 2,
+                          bg: 'attention.subtle',
+                        }}
+                      >
+                        <Text
+                          sx={{
+                            fontWeight: 600,
+                            fontSize: 1,
+                            display: 'block',
+                            mb: 1,
+                          }}
+                        >
+                          🛡️ {a.tool_name}
+                        </Text>
+                        {a.tool_args && (
                           <Text
                             sx={{
                               fontSize: 0,
-                              color: 'fg.default',
+                              color: 'fg.muted',
                               display: 'block',
-                              whiteSpace: 'pre-wrap',
-                              wordBreak: 'break-word',
+                              mb: 2,
+                              fontFamily: 'mono',
                             }}
                           >
-                            {content.length > 320
-                              ? `${content.slice(0, 320)}…`
-                              : content}
+                            {JSON.stringify(a.tool_args)}
                           </Text>
+                        )}
+                        <Box sx={{ display: 'flex', gap: 1 }}>
+                          <Button
+                            size="small"
+                            variant="primary"
+                            onClick={() => void handleApprove(a.id)}
+                            disabled={approvalLoading === a.id}
+                          >
+                            {approvalLoading === a.id
+                              ? 'Approving…'
+                              : 'Approve'}
+                          </Button>
+                          <Button
+                            size="small"
+                            variant="danger"
+                            onClick={() =>
+                              void handleReject(
+                                a.id,
+                                'Rejected from trigger panel',
+                              )
+                            }
+                            disabled={approvalLoading === a.id}
+                          >
+                            Reject
+                          </Button>
                         </Box>
-                      );
-                    })}
-                </Box>
+                      </Box>
+                    ))}
+                  </Box>
+                </>
               )}
-              </>
+
+              {/* ── Approval Streaming Messages ─────────────────────────── */}
+              {hasTriggeredApproval && (
+                <>
+                  <Heading as="h4" sx={{ fontSize: 1, mt: 3, mb: 2 }}>
+                    Approval Agent Messages
+                    {isLaunchingApproval && (
+                      <Spinner
+                        size="small"
+                        sx={{
+                          ml: 2,
+                          verticalAlign: 'middle',
+                          width: 14,
+                          height: 14,
+                          minWidth: 14,
+                          minHeight: 14,
+                        }}
+                      />
+                    )}
+                  </Heading>
+
+                  {/* ── Approval Generated Output ───────────────────────── */}
+                  {hasTriggeredApproval && (
+                    <>
+                      <Heading as="h4" sx={{ fontSize: 1, mt: 3, mb: 2 }}>
+                        Generated Output
+                      </Heading>
+
+                      {(() => {
+                        const latestAssistantOutput = approvalSidebarMessages
+                          .filter(msg => msg.role === 'assistant')
+                          .sort((a, b) => {
+                            const ta = a.createdAt
+                              ? new Date(a.createdAt).getTime()
+                              : 0;
+                            const tb = b.createdAt
+                              ? new Date(b.createdAt).getTime()
+                              : 0;
+                            return tb - ta;
+                          })[0];
+
+                        if (!latestAssistantOutput) {
+                          return (
+                            <Box
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 2,
+                                mb: 2,
+                              }}
+                            >
+                              <Spinner
+                                size="small"
+                                sx={{
+                                  width: 16,
+                                  height: 16,
+                                  minWidth: 16,
+                                  minHeight: 16,
+                                }}
+                              />
+                              <Text sx={{ color: 'fg.muted', fontSize: 0 }}>
+                                Waiting for agent output…
+                              </Text>
+                            </Box>
+                          );
+                        }
+
+                        const outputText =
+                          typeof latestAssistantOutput.content === 'string'
+                            ? latestAssistantOutput.content
+                            : JSON.stringify(latestAssistantOutput.content);
+
+                        return (
+                          <Box
+                            sx={{
+                              mb: 2,
+                              border: '1px solid',
+                              borderColor: 'success.muted',
+                              borderRadius: 2,
+                              overflow: 'hidden',
+                            }}
+                          >
+                            <Box
+                              sx={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 1,
+                                px: 2,
+                                py: 1,
+                                bg: 'success.subtle',
+                                borderBottom: '1px solid',
+                                borderColor: 'success.muted',
+                              }}
+                            >
+                              <Label variant="success" size="small">
+                                completed
+                              </Label>
+                              {latestAssistantOutput.createdAt && (
+                                <Text
+                                  sx={{
+                                    fontSize: 0,
+                                    color: 'fg.muted',
+                                    ml: 'auto',
+                                    whiteSpace: 'nowrap',
+                                  }}
+                                >
+                                  {new Date(
+                                    latestAssistantOutput.createdAt,
+                                  ).toLocaleString()}
+                                </Text>
+                              )}
+                              <Button
+                                size="small"
+                                variant="invisible"
+                                sx={{ p: 1 }}
+                                onClick={() =>
+                                  navigator.clipboard.writeText(outputText)
+                                }
+                              >
+                                <CopyIcon size={12} />
+                              </Button>
+                            </Box>
+                            <Box
+                              sx={{
+                                p: 2,
+                                bg: 'canvas.default',
+                                maxHeight: 300,
+                                overflow: 'auto',
+                              }}
+                            >
+                              <Text
+                                sx={{
+                                  fontSize: 0,
+                                  color: 'fg.default',
+                                  display: 'block',
+                                  whiteSpace: 'pre-wrap',
+                                  wordBreak: 'break-word',
+                                  fontFamily: 'mono',
+                                }}
+                              >
+                                {outputText || '(empty output)'}
+                              </Text>
+                            </Box>
+                          </Box>
+                        );
+                      })()}
+                    </>
+                  )}
+
+                  {approvalSidebarMessages.filter(msg => msg.role !== 'user')
+                    .length === 0 ? (
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 2,
+                        mb: 2,
+                      }}
+                    >
+                      <Spinner
+                        size="small"
+                        sx={{
+                          width: 16,
+                          height: 16,
+                          minWidth: 16,
+                          minHeight: 16,
+                        }}
+                      />
+                      <Text sx={{ color: 'fg.muted', fontSize: 0 }}>
+                        Waiting for approval agent messages…
+                      </Text>
+                    </Box>
+                  ) : (
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 2,
+                        mb: 2,
+                      }}
+                    >
+                      {approvalSidebarMessages
+                        .slice()
+                        .filter(msg => msg.role !== 'user')
+                        .sort((a, b) => {
+                          const ta = a.createdAt
+                            ? new Date(a.createdAt).getTime()
+                            : 0;
+                          const tb = b.createdAt
+                            ? new Date(b.createdAt).getTime()
+                            : 0;
+                          return tb - ta;
+                        })
+                        .slice(0, 10)
+                        .map(msg => {
+                          const content =
+                            typeof msg.content === 'string'
+                              ? msg.content
+                              : JSON.stringify(msg.content);
+                          return (
+                            <Box
+                              key={`approval-msg-${msg.id}`}
+                              sx={{
+                                p: 2,
+                                bg: 'canvas.subtle',
+                                borderRadius: 2,
+                                border: '1px solid',
+                                borderColor: 'border.default',
+                              }}
+                            >
+                              <Box
+                                sx={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 1,
+                                  mb: 1,
+                                }}
+                              >
+                                <Label
+                                  size="small"
+                                  variant={
+                                    msg.role === 'assistant'
+                                      ? 'accent'
+                                      : msg.role === 'tool'
+                                        ? 'success'
+                                        : 'secondary'
+                                  }
+                                >
+                                  {msg.role}
+                                </Label>
+                                {msg.createdAt && (
+                                  <Text
+                                    sx={{
+                                      fontSize: 0,
+                                      color: 'fg.muted',
+                                      marginLeft: 'auto',
+                                      whiteSpace: 'nowrap',
+                                    }}
+                                  >
+                                    {new Date(
+                                      msg.createdAt,
+                                    ).toLocaleTimeString()}
+                                  </Text>
+                                )}
+                              </Box>
+                              <Text
+                                sx={{
+                                  fontSize: 0,
+                                  color: 'fg.default',
+                                  display: 'block',
+                                  whiteSpace: 'pre-wrap',
+                                  wordBreak: 'break-word',
+                                }}
+                              >
+                                {content.length > 320
+                                  ? `${content.slice(0, 320)}…`
+                                  : content}
+                              </Text>
+                            </Box>
+                          );
+                        })}
+                    </Box>
+                  )}
+                </>
               )}
 
               <Box sx={{ mt: 2, display: 'grid', gap: 2 }}>
@@ -2199,7 +2401,6 @@ const AgentTriggerInner: React.FC<{ onLogout: () => void }> = ({
                   ))}
               </Box>
             )}
-
           </Box>
         </Box>
       </Box>
@@ -2269,5 +2470,3 @@ const AgentTriggersExample: React.FC = () => {
 };
 
 export default AgentTriggersExample;
-
-

@@ -11,18 +11,42 @@ compatibility with existing callers.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query, WebSocket
 from pydantic import BaseModel, Field
+
+from agent_runtimes.streams.loop import (
+    publish_stream_event,
+    stream_loop,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tool-approvals", tags=["tool-approvals"])
 legacy_router = APIRouter(
     prefix="/api/ai-agents/v1/tool-approvals",
     tags=["tool-approvals"],
 )
+ws_router = APIRouter(
+    prefix="/api/ai-agents/v1",
+    tags=["tool-approvals"],
+)
+
+
+async def _decide_approval_via_ws(
+    approval_id: str,
+    approved: bool,
+    note: str | None = None,
+) -> ToolApprovalRecord:
+    return await _update_approval(
+        approval_id,
+        status="approved" if approved else "rejected",
+        note=note,
+    )
 
 
 class ToolApprovalCreateRequest(BaseModel):
@@ -60,6 +84,21 @@ _APPROVALS: dict[str, ToolApprovalRecord] = {}
 _APPROVALS_LOCK = asyncio.Lock()
 
 
+async def _publish_approval_event(
+    *,
+    event_type: str,
+    payload: dict[str, Any],
+    agent_id: str | None,
+) -> None:
+    """Publish a tool-approval event through the generic stream."""
+    await publish_stream_event(
+        event_type=event_type,
+        payload=payload,
+        agent_id=agent_id,
+        list_approvals=_list_approvals,
+    )
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -82,6 +121,11 @@ async def mirror_approval_to_local(data: dict) -> ToolApprovalRecord:
     )
     async with _APPROVALS_LOCK:
         _APPROVALS[record.id] = record
+    await _publish_approval_event(
+        event_type="tool_approval_created",
+        payload=record.model_dump(),
+        agent_id=record.agent_id or None,
+    )
     return record
 
 
@@ -101,9 +145,22 @@ async def update_local_approval_status(
     async with _APPROVALS_LOCK:
         record = _APPROVALS.get(approval_id)
         if record and record.status == "pending":
-            _APPROVALS[approval_id] = record.model_copy(
+            updated = record.model_copy(
                 update={"status": status, "note": note, "updated_at": _now_iso()}
             )
+            _APPROVALS[approval_id] = updated
+        else:
+            updated = None
+    if updated is not None:
+        await _publish_approval_event(
+            event_type=(
+                "tool_approval_approved"
+                if status == "approved"
+                else "tool_approval_rejected"
+            ),
+            payload=updated.model_dump(),
+            agent_id=updated.agent_id or None,
+        )
 
 
 async def _create_approval(body: ToolApprovalCreateRequest) -> ToolApprovalRecord:
@@ -131,6 +188,11 @@ async def _create_approval(body: ToolApprovalCreateRequest) -> ToolApprovalRecor
     )
     async with _APPROVALS_LOCK:
         _APPROVALS[record.id] = record
+    await _publish_approval_event(
+        event_type="tool_approval_created",
+        payload=record.model_dump(),
+        agent_id=record.agent_id or None,
+    )
     return record
 
 
@@ -177,43 +239,60 @@ async def _update_approval(
             }
         )
         _APPROVALS[approval_id] = updated
-        return updated
+
+    await _publish_approval_event(
+        event_type=(
+            "tool_approval_approved"
+            if status == "approved"
+            else "tool_approval_rejected"
+        ),
+        payload=updated.model_dump(),
+        agent_id=updated.agent_id or None,
+    )
+    return updated
 
 
-@router.post("", response_model=ToolApprovalRecord)
-@legacy_router.post("", response_model=ToolApprovalRecord)
-async def create_tool_approval(body: ToolApprovalCreateRequest) -> ToolApprovalRecord:
-    return await _create_approval(body)
+# Public REST endpoints are intentionally removed. Tool-approval state is
+# propagated and consumed over websocket streams only.
 
 
-@router.get("", response_model=list[ToolApprovalRecord])
-@legacy_router.get("", response_model=list[ToolApprovalRecord])
-async def list_tool_approvals(
-    agent_id: str | None = None,
-    status: str | None = None,
-) -> list[ToolApprovalRecord]:
-    return await _list_approvals(agent_id=agent_id, status=status)
+# ─── WebSocket endpoints ─────────────────────────────────────────────
 
 
-@router.get("/{approval_id}", response_model=ToolApprovalRecord)
-@legacy_router.get("/{approval_id}", response_model=ToolApprovalRecord)
-async def get_tool_approval(approval_id: str) -> ToolApprovalRecord:
-    return await _get_approval(approval_id)
+@router.websocket("/ws")
+async def tool_approvals_ws(
+    websocket: WebSocket,
+    agent_id: str | None = Query(default=None),
+) -> None:
+    await stream_loop(
+        websocket,
+        agent_id,
+        list_approvals=_list_approvals,
+        decide_approval=_decide_approval_via_ws,
+    )
 
 
-@router.post("/{approval_id}/approve", response_model=ToolApprovalRecord)
-@legacy_router.post("/{approval_id}/approve", response_model=ToolApprovalRecord)
-async def approve_tool_approval(
-    approval_id: str,
-    body: ToolApprovalDecisionRequest,
-) -> ToolApprovalRecord:
-    return await _update_approval(approval_id, status="approved", note=body.note)
+@legacy_router.websocket("/ws")
+async def legacy_tool_approvals_ws(
+    websocket: WebSocket,
+    agent_id: str | None = Query(default=None),
+) -> None:
+    await stream_loop(
+        websocket,
+        agent_id,
+        list_approvals=_list_approvals,
+        decide_approval=_decide_approval_via_ws,
+    )
 
 
-@router.post("/{approval_id}/reject", response_model=ToolApprovalRecord)
-@legacy_router.post("/{approval_id}/reject", response_model=ToolApprovalRecord)
-async def reject_tool_approval(
-    approval_id: str,
-    body: ToolApprovalDecisionRequest,
-) -> ToolApprovalRecord:
-    return await _update_approval(approval_id, status="rejected", note=body.note)
+@ws_router.websocket("/ws")
+async def ai_agents_stream_ws(
+    websocket: WebSocket,
+    agent_id: str | None = Query(default=None),
+) -> None:
+    await stream_loop(
+        websocket,
+        agent_id,
+        list_approvals=_list_approvals,
+        decide_approval=_decide_approval_via_ws,
+    )

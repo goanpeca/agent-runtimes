@@ -47,7 +47,11 @@ from ..services import (
 from ..specs.agents import AGENT_SPECS
 from ..specs.agents import get_agent_spec as get_library_agent_spec
 from ..specs.agents import list_agent_specs as list_library_agents
-from ..specs.events import EVENT_KIND_AGENT_ASSIGNED
+
+try:
+    from ..specs.events import EVENT_KIND_AGENT_ASSIGNED
+except Exception:  # pragma: no cover - compatibility fallback during regen drift
+    EVENT_KIND_AGENT_ASSIGNED = "agent-assigned"
 from ..specs.models import DEFAULT_MODEL
 from ..transports import AGUITransport, MCPUITransport, VercelAITransport
 from ..types import AgentSpec, MCPServer
@@ -1171,7 +1175,20 @@ async def create_agent(
                     approval_tool_ids,
                 )
 
-            pydantic_agent = PydanticAgent(request.model, **agent_kwargs)
+            try:
+                pydantic_agent = PydanticAgent(request.model, **agent_kwargs)
+            except Exception as exc:
+                # Newer/older pydantic-ai builds can reject constructor kwargs
+                # like `usage_limits`; retry without it for compatibility.
+                if "usage_limits" in agent_kwargs and "usage_limits" in str(exc):
+                    logger.warning(
+                        "PydanticAgent constructor rejected usage_limits for agent '%s'; retrying without usage_limits.",
+                        agent_id,
+                    )
+                    agent_kwargs.pop("usage_limits", None)
+                    pydantic_agent = PydanticAgent(request.model, **agent_kwargs)
+                else:
+                    raise
 
             # Register runtime tools declared in the request/spec.
             register_agent_tools(
@@ -1382,7 +1399,9 @@ async def create_agent(
                     agent_id=agent_id,
                     has_spec_frontend_tools=has_spec_frontend_tools,
                     approval_tool_ids=approval_tool_ids or [],
-                    is_triggered=bool(_lib_spec and getattr(_lib_spec, "trigger", None)),
+                    is_triggered=bool(
+                        _lib_spec and getattr(_lib_spec, "trigger", None)
+                    ),
                 )
                 register_vercel_agent(agent_id, vercel_adapter)
                 logger.info(f"Registered agent with Vercel AI: {agent_id}")
@@ -1417,6 +1436,10 @@ async def create_agent(
 
         logger.info(f"Created agent: {agent_id} ({request.name})")
 
+        # Emit initial 0-value OTEL data points so timeseries charts show the
+        # full history starting from agent creation time.
+        _emit_initial_otel_baseline(agent_id, http_request)
+
         return CreateAgentResponse(
             id=agent_id,
             name=request.name,
@@ -1430,6 +1453,83 @@ async def create_agent(
     except Exception as e:
         logger.error(f"Failed to create agent: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create agent: {str(e)}")
+
+
+def _emit_initial_otel_baseline(agent_id: str, http_request: Request) -> None:
+    """Emit 0-value OTEL metrics and cost trace so charts start at zero.
+
+    This is fire-and-forget — failures are logged but never propagated.
+    """
+    try:
+        from ..observability.prompt_turn_metrics import (
+            decode_user_uid,
+            extract_bearer_token,
+            record_prompt_turn_completion,
+        )
+
+        auth_header = http_request.headers.get("Authorization", "")
+        user_jwt = extract_bearer_token(auth_header)
+        user_uid = decode_user_uid(user_jwt)
+
+        # 0-value prompt-turn metrics (establishes the baseline for token chart)
+        record_prompt_turn_completion(
+            prompt="",
+            response="",
+            duration_ms=0.0,
+            protocol="baseline",
+            stop_reason="agent_created",
+            success=True,
+            model=None,
+            tool_call_count=0,
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=0,
+            user_jwt_token=user_jwt,
+            agent_id=agent_id,
+        )
+
+        # 0-value cost trace (establishes the baseline for cost chart)
+        try:
+            from datalayer_core.otel.emitter import OTelEmitter
+        except Exception:
+            OTelEmitter = None
+
+        if OTelEmitter is not None:
+            if not user_uid:
+                logger.debug(
+                    "Skipping initial OTEL baseline cost emission for '%s': missing user_uid",
+                    agent_id,
+                )
+            else:
+                emitter = OTelEmitter(
+                    service_name="agent-runtimes",
+                    user_uid=user_uid,
+                    token=user_jwt,
+                )
+                if emitter.enabled:
+                    attrs = {
+                        "agent.id": agent_id,
+                        "agent.model": "none",
+                        "gen_ai.usage.input_tokens": 0,
+                        "gen_ai.usage.output_tokens": 0,
+                        "gen_ai.usage.total_tokens": 0,
+                        "gen_ai.usage.cost_usd": 0.0,
+                        "agent.cost.cumulative_usd": 0.0,
+                    }
+                    emitter.add_counter(
+                        "agent_runtimes.capability.cost.run.count", 0, attrs
+                    )
+                    emitter.add_counter(
+                        "agent_runtimes.capability.cost.run.usd", 0.0, attrs
+                    )
+                    with emitter.span(
+                        "agent_runtimes.capability.cost.run", attributes=attrs
+                    ):
+                        pass
+
+        logger.info(f"Emitted initial OTEL baseline for agent '{agent_id}'")
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"Failed to emit initial OTEL baseline for '{agent_id}': {exc}")
 
 
 def _get_agent_toolsets_info(agent: Any) -> dict[str, Any]:

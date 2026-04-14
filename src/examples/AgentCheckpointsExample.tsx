@@ -69,13 +69,13 @@ import { useSimpleAuthStore } from '@datalayer/core/lib/views/otel';
 import { SignInSimple } from '@datalayer/core/lib/views/iam';
 import { UserBadge } from '@datalayer/core/lib/views/profile';
 import { Chat } from '../chat';
-import { useAgents } from '../hooks/useAgents';
-import { useAgentLifecycle } from '../hooks/useCheckpoints';
 import {
   useAgentRuntimes,
+  useAgentRuntimesQuery,
   useRefreshAgentRuntimes,
   useDeleteAgentRuntime,
-} from '../hooks/useAgents';
+} from '../hooks/useAgentRuntimes';
+import { useAgentLifecycle } from '../hooks/useCheckpoints';
 import { useDeletePausedAgentRuntime } from '../hooks/useCheckpoints';
 import { AGENT_STATUS_COLORS } from '../types/agents';
 import type { CheckpointRecord } from '../types/checkpoints';
@@ -117,7 +117,7 @@ const AGENT_SPEC = {
   description:
     'Monitor and analyze sales KPIs from the CRM system. Generate daily reports, identify trends, and flag anomalies.',
   model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
-  protocol: 'ag-ui',
+  protocol: 'vercel-ai',
   memory: 'mem0',
   sandbox_variant: 'jupyter',
   environment_name: 'ai-agents-env',
@@ -191,13 +191,14 @@ const AgentCheckpointsInner: React.FC<{ onLogout: () => void }> = ({
     launchRuntime,
     connectToRuntime,
     disconnect,
-  } = useAgents({
+  } = useAgentRuntimes({
     agentSpecId: AGENT_SPEC_ID,
     autoStart: false,
     agentSpec: AGENT_SPEC,
     agentConfig: {
       name: DEMO_AGENT_NAME,
-      protocol: 'ag-ui',
+      model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+      protocol: 'vercel-ai',
       description:
         'Monitor Sales KPI agent — exercises pause/resume checkpointing',
     },
@@ -214,7 +215,7 @@ const AgentCheckpointsInner: React.FC<{ onLogout: () => void }> = ({
     });
 
   // Agent runtimes from the focused hook
-  const { data: agentRuntimes } = useAgentRuntimes();
+  const { data: agentRuntimes } = useAgentRuntimesQuery();
   const refetchRuntimes = useRefreshAgentRuntimes();
   const deleteRuntimeMutation = useDeleteAgentRuntime();
   const deletePausedRuntimeMutation = useDeletePausedAgentRuntime();
@@ -315,7 +316,7 @@ const AgentCheckpointsInner: React.FC<{ onLogout: () => void }> = ({
       name: rt.name,
       description: rt.environment_title || rt.environment_name,
       status: rt.status,
-      protocol: 'ag-ui',
+      protocol: 'vercel-ai',
       environmentName: rt.environment_name,
       jupyterBaseUrl: rt.url,
     }));
@@ -1040,7 +1041,7 @@ const AgentCheckpointsInner: React.FC<{ onLogout: () => void }> = ({
           ) : (isReady || runtimeStatus === 'resumed') &&
             runtimeStatus !== 'paused' ? (
             <Chat
-              protocol="ag-ui"
+              protocol="vercel-ai"
               baseUrl={agentBaseUrl}
               agentId={agentId}
               title="Monitor Sales KPI Agent"

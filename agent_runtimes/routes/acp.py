@@ -39,6 +39,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from ..adapters.base import BaseAgent
+from ..context.identities import set_request_user_jwt
 from ..context.usage import get_usage_tracker
 from ..observability.prompt_turn_metrics import (
     extract_identity_hints,
@@ -777,6 +778,9 @@ async def _handle_prompt(
         model,
     )
 
+    # Make the user JWT available to capabilities (e.g. OTEL hooks).
+    set_request_user_jwt(user_jwt_token)
+
     # Register this prompt for potential cancellation
     cancel_event = register_prompt(session_id)
 
@@ -924,6 +928,7 @@ async def _handle_prompt(
             user_provider=metric_user_provider,
             identities_count=None,
             user_jwt_token=user_jwt_token,
+            agent_id=session_agent_id,
         )
 
 

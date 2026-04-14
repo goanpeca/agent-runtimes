@@ -3,7 +3,7 @@
  * Distributed under the terms of the Modified BSD License.
  */
 
-export { default as AgentspecExample } from './AgentspecExample';
+export { default as AgentSpecExample } from './AgentSpecExample';
 export { default as A2UiComponentGalleryExample } from './A2UiComponentGalleryExample';
 export { default as A2UiContactCardExample } from './A2UiContactCardExample';
 export { default as A2UiRestaurantExample } from './A2UiRestaurantExample';
@@ -27,6 +27,7 @@ export { default as AgentGuardrailsExample } from './AgentGuardrailsExample';
 export { default as AgentToolApprovalsExample } from './AgentToolApprovalsExample';
 export { default as AgentMemoryExample } from './AgentMemoryExample';
 export { default as AgentOtelExample } from './AgentOtelExample';
+export { default as AgentMCPExample } from './AgentMCPExample';
 export { default as AgentMonitoringExample } from './AgentMonitoringExample';
 export { default as AgentNotificationsExample } from './AgentNotificationsExample';
 export { default as AgentOutputsExample } from './AgentOutputsExample';
