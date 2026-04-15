@@ -57,6 +57,7 @@ import {
 import {
   useConfig,
   useSkills,
+  useSkillActions,
   useContextSnapshot,
   useSandbox,
 } from '../../hooks';
@@ -220,6 +221,9 @@ function ChatBaseInner({
   hideMessagesAfterToolUI = false,
   focusTrigger,
   frontendTools,
+  // Tool invocation hooks
+  onToolCallStart,
+  onToolCallComplete,
   // Identity/Authorization props
   onAuthorizationRequired,
   connectedIdentities,
@@ -281,8 +285,6 @@ function ChatBaseInner({
   >(new Map());
   // Note: legacy _enabledTools for backend-defined tools from config query
   const [_enabledTools, setEnabledTools] = useState<string[]>([]);
-  // Skills state
-  const [enabledSkills, setEnabledSkills] = useState<Set<string>>(new Set());
 
   // ---- Data queries ----
   const configQuery = useConfig(
@@ -296,6 +298,19 @@ function ChatBaseInner({
     protocol?.configEndpoint,
     protocol?.authToken,
   );
+  const { enableSkill: wsEnableSkill, disableSkill: wsDisableSkill } =
+    useSkillActions();
+
+  // Derive enabledSkills from the WS-pushed skill statuses.
+  const enabledSkills = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of skillsQuery.data?.skills ?? []) {
+      if (s.status === 'enabled' || s.status === 'loaded') {
+        set.add(s.id);
+      }
+    }
+    return set;
+  }, [skillsQuery.data]);
   const contextSnapshotQuery = useContextSnapshot(
     Boolean(protocol?.enableConfigQuery) && showTokenUsage,
     protocol?.configEndpoint,
@@ -344,6 +359,11 @@ function ChatBaseInner({
   // re-created when frontendTools changes) always accesses the latest value.
   const frontendToolsRef = useRef(frontendTools);
   frontendToolsRef.current = frontendTools;
+  // Stable refs for tool invocation hooks (pre/post)
+  const onToolCallStartRef = useRef(onToolCallStart);
+  onToolCallStartRef.current = onToolCallStart;
+  const onToolCallCompleteRef = useRef(onToolCallComplete);
+  onToolCallCompleteRef.current = onToolCallComplete;
 
   // ---- Helpers ----
   const isServerSelected = useCallback(
@@ -481,12 +501,7 @@ function ChatBaseInner({
     });
   }, [mcpServers, configQuery.data?.mcpServers, isServerSelected]);
 
-  // Initialize enabled skills from initialSkills prop
-  useEffect(() => {
-    if (initialSkills && initialSkills.length > 0) {
-      setEnabledSkills(new Set(initialSkills));
-    }
-  }, [initialSkills]);
+  // initialSkills are now handled server-side during agent creation.
 
   // ---- Toggle helpers ----
   const toggleMcpTool = useCallback((serverId: string, toolName: string) => {
@@ -518,23 +533,28 @@ function ChatBaseInner({
     [],
   );
 
-  const toggleSkill = useCallback((skillId: string) => {
-    setEnabledSkills(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(skillId)) {
-        newSet.delete(skillId);
+  const toggleSkill = useCallback(
+    (skillId: string) => {
+      if (enabledSkills.has(skillId)) {
+        wsDisableSkill(skillId);
       } else {
-        newSet.add(skillId);
+        wsEnableSkill(skillId);
       }
-      return newSet;
-    });
-  }, []);
+    },
+    [enabledSkills, wsEnableSkill, wsDisableSkill],
+  );
 
   const toggleAllSkills = useCallback(
     (allSkillIds: string[], enable: boolean) => {
-      setEnabledSkills(enable ? new Set(allSkillIds) : new Set());
+      for (const id of allSkillIds) {
+        if (enable) {
+          wsEnableSkill(id);
+        } else {
+          wsDisableSkill(id);
+        }
+      }
     },
-    [],
+    [wsEnableSkill, wsDisableSkill],
   );
 
   const getEnabledMcpToolNames = useCallback((): string[] => {
@@ -935,6 +955,13 @@ function ChatBaseInner({
               toolCallsRef.current.set(toolCallId, toolCallMsg);
               setDisplayItems(prev => [...prev, toolCallMsg]);
 
+              // Fire pre-hook for new tool calls
+              onToolCallStartRef.current?.({
+                toolName,
+                toolCallId,
+                args,
+              });
+
               const frontendTool = frontendToolsRef.current?.find(
                 t => t.name === toolName,
               );
@@ -1034,6 +1061,16 @@ function ChatBaseInner({
                       : item,
                   ),
                 );
+
+                // Fire post-hook for tool results
+                onToolCallCompleteRef.current?.({
+                  toolName: existingToolCall.toolName,
+                  toolCallId,
+                  args: existingToolCall.args,
+                  result: event.toolResult.result,
+                  status: updatedToolCall.status,
+                  error: event.toolResult.error,
+                });
               }
             }
           }
@@ -1781,6 +1818,11 @@ function ChatBaseInner({
   const filteredMcpServers = (configQuery.data?.mcpServers || []).filter(
     server => !mcpServers || isServerSelected(server),
   );
+  const connectionConfirmed =
+    !protocol ||
+    protocol.enableConfigQuery === false ||
+    !!configQuery.data ||
+    !!skillsQuery.data;
 
   // ========================================================================
   // Render
@@ -1890,6 +1932,7 @@ function ChatBaseInner({
           input={input}
           setInput={setInput}
           isLoading={isLoading}
+          connectionConfirmed={connectionConfirmed}
           placeholder={placeholder}
           autoFocus={autoFocus}
           focusTrigger={focusTrigger}

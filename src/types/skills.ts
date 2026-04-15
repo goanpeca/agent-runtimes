@@ -4,7 +4,16 @@
  */
 
 /**
- * Skill information from backend
+ * Skill status as tracked by the server-side skills area.
+ *
+ * - `available`: in catalog, not yet enabled
+ * - `enabled`: enabled, SKILL.md loading pending
+ * - `loaded`: SKILL.md loaded, included in the LLM system prompt
+ */
+export type SkillStatus = 'available' | 'enabled' | 'loaded';
+
+/**
+ * Skill information from the WebSocket snapshot.
  */
 export interface SkillInfo {
   id: string;
@@ -14,6 +23,33 @@ export interface SkillInfo {
   tags?: string[];
   has_scripts?: boolean;
   has_resources?: boolean;
+  /** Lifecycle status from the server-side skills area */
+  status?: SkillStatus;
+  /** Raw SKILL.md content (populated once status is 'loaded') */
+  skill_definition?: string | null;
+}
+
+/**
+ * Loaded skill normalized for UI/state consumption.
+ *
+ * This representation is resolved from an agent's active spec and optional
+ * catalog enrichment, then persisted per-agent in the runtime store.
+ */
+export interface LoadedSkillInfo {
+  id: string;
+  name: string;
+  description: string;
+  variant: 'module' | 'package' | 'path' | 'unknown';
+  module?: string;
+  package?: string;
+  method?: string;
+  path?: string;
+  license?: string;
+  compatibility?: string;
+  allowedTools?: string[];
+  skillMetadata?: Record<string, string>;
+  tags?: string[];
+  emoji?: string;
 }
 
 /**

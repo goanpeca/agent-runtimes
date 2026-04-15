@@ -11,24 +11,22 @@ import { Box } from '@datalayer/primer-addons';
 import { ErrorView } from './components';
 import {
   Button,
+  Dialog,
   Heading,
   Label,
   Spinner,
   Text,
   Token as PrimerToken,
 } from '@primer/react';
-import {
-  BeakerIcon,
-  BriefcaseIcon,
-  PackageIcon,
-  SignOutIcon,
-} from '@primer/octicons-react';
+import { BriefcaseIcon, FileIcon, SignOutIcon } from '@primer/octicons-react';
 import { useSimpleAuthStore } from '@datalayer/core/lib/views/otel';
 import { SignInSimple } from '@datalayer/core/lib/views/iam';
 import { UserBadge } from '@datalayer/core/lib/views/profile';
 import { ThemedProvider } from './utils/themedProvider';
 import { uniqueAgentId } from './utils/agentId';
 import { Chat } from '../chat';
+import { useSkills, useSkillActions } from '../hooks';
+import type { SkillInfo } from '../types';
 
 const queryClient = new QueryClient();
 const AGENT_NAME = 'skills-demo-agent';
@@ -36,92 +34,105 @@ const AGENT_SPEC_ID = 'demo-full';
 const DEFAULT_LOCAL_BASE_URL =
   import.meta.env.VITE_BASE_URL || 'http://localhost:8765';
 
-interface SkillInfo {
-  name: string;
-  description: string;
-  variant: 'module' | 'package' | 'path';
-  module?: string;
-  package?: string;
-  method?: string;
-  path?: string;
-  license?: string;
-  compatibility?: string;
-  allowedTools?: string[];
-  skillMetadata?: Record<string, string>;
-  tags?: string[];
-  emoji?: string;
-}
+const SkillCard: React.FC<{
+  skill: SkillInfo;
+  onToggle: (id: string) => void;
+}> = ({ skill, onToggle }) => {
+  const [showDefinition, setShowDefinition] = useState(false);
 
-const SkillCard: React.FC<{ skill: SkillInfo }> = ({ skill }) => (
-  <Box
-    sx={{
-      border: '1px solid',
-      borderColor: 'border.default',
-      borderRadius: 2,
-      p: 2,
-      mb: 2,
-      bg: 'canvas.default',
-    }}
-  >
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-      {skill.emoji && <Text sx={{ fontSize: 2 }}>{skill.emoji}</Text>}
-      <Text sx={{ fontWeight: 600, fontSize: 1 }}>{skill.name}</Text>
-      <Label
-        size="small"
-        variant={skill.variant === 'package' ? 'accent' : 'primary'}
+  return (
+    <>
+      <Box
+        sx={{
+          border: '1px solid',
+          borderColor: 'border.default',
+          borderRadius: 2,
+          p: 2,
+          mb: 2,
+          bg: 'canvas.default',
+        }}
       >
-        {skill.variant === 'package'
-          ? 'package-based'
-          : skill.variant === 'path'
-            ? 'path-based'
-            : 'name-based'}
-      </Label>
-    </Box>
-    <Text as="p" sx={{ fontSize: 0, color: 'fg.muted', mb: 1, mt: 0 }}>
-      {skill.description}
-    </Text>
-    {skill.variant === 'module' && skill.module && (
-      <Text sx={{ fontSize: 0, fontFamily: 'mono', color: 'fg.muted' }}>
-        module: {skill.module}
-      </Text>
-    )}
-    {skill.variant === 'package' && (
-      <Box sx={{ fontSize: 0, fontFamily: 'mono', color: 'fg.muted' }}>
-        <Text sx={{ display: 'block' }}>package: {skill.package}</Text>
-        <Text sx={{ display: 'block' }}>method: {skill.method}</Text>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+          <Text sx={{ fontWeight: 600, fontSize: 1 }}>{skill.name}</Text>
+          {skill.status && (
+            <Label
+              size="small"
+              variant={
+                skill.status === 'loaded'
+                  ? 'success'
+                  : skill.status === 'enabled'
+                    ? 'attention'
+                    : 'secondary'
+              }
+            >
+              {skill.status}
+            </Label>
+          )}
+          {skill.status === 'loaded' && skill.skill_definition && (
+            <Button
+              size="small"
+              variant="invisible"
+              onClick={() => setShowDefinition(true)}
+              leadingVisual={FileIcon}
+              sx={{ fontSize: 0, p: 0, color: 'fg.muted' }}
+              aria-label="View SKILL.md"
+            >
+              SKILL.md
+            </Button>
+          )}
+          <Button
+            size="small"
+            variant="invisible"
+            onClick={() => onToggle(skill.id)}
+            sx={{ ml: 'auto', fontSize: 0 }}
+          >
+            {skill.status === 'available' ? 'Enable' : 'Disable'}
+          </Button>
+        </Box>
+        {skill.description && (
+          <Text as="p" sx={{ fontSize: 0, color: 'fg.muted', mb: 1, mt: 0 }}>
+            {skill.description}
+          </Text>
+        )}
+        {skill.tags && skill.tags.length > 0 && (
+          <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+            {skill.tags.map(tag => (
+              <PrimerToken key={tag} text={tag} size="small" />
+            ))}
+          </Box>
+        )}
       </Box>
-    )}
-    {skill.variant === 'path' && skill.path && (
-      <Text sx={{ fontSize: 0, fontFamily: 'mono', color: 'fg.muted' }}>
-        path: {skill.path}
-      </Text>
-    )}
-    {skill.license && (
-      <Text sx={{ fontSize: 0, color: 'fg.muted', display: 'block', mt: 1 }}>
-        License: {skill.license}
-      </Text>
-    )}
-    {skill.compatibility && (
-      <Text sx={{ fontSize: 0, color: 'fg.muted', display: 'block' }}>
-        Compat: {skill.compatibility}
-      </Text>
-    )}
-    {skill.allowedTools && skill.allowedTools.length > 0 && (
-      <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-        {skill.allowedTools.map(tool => (
-          <PrimerToken key={tool} text={tool} size="small" />
-        ))}
-      </Box>
-    )}
-    {skill.tags && skill.tags.length > 0 && (
-      <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-        {skill.tags.map(tag => (
-          <PrimerToken key={tag} text={tag} size="small" />
-        ))}
-      </Box>
-    )}
-  </Box>
-);
+
+      {showDefinition && skill.skill_definition && (
+        <Dialog
+          title={`${skill.name} — SKILL.md`}
+          onClose={() => setShowDefinition(false)}
+          width="xlarge"
+        >
+          <Box sx={{ p: 3, maxHeight: '70vh', overflow: 'auto' }}>
+            <Box
+              as="pre"
+              sx={{
+                fontFamily: 'mono',
+                fontSize: 0,
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                m: 0,
+                p: 3,
+                bg: 'canvas.inset',
+                borderRadius: 2,
+                border: '1px solid',
+                borderColor: 'border.muted',
+              }}
+            >
+              {skill.skill_definition}
+            </Box>
+          </Box>
+        </Dialog>
+      )}
+    </>
+  );
+};
 
 const AgentSkillsInner: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const { token } = useSimpleAuthStore();
@@ -134,10 +145,26 @@ const AgentSkillsInner: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
   const [hookError, setHookError] = useState<string | null>(null);
   const [agentId, setAgentId] = useState<string>(agentName);
   const [isReconnectedAgent, setIsReconnectedAgent] = useState(false);
-  const [skills, setSkills] = useState<SkillInfo[]>([]);
 
   const agentBaseUrl = DEFAULT_LOCAL_BASE_URL;
   const chatAuthToken: string | undefined = token === null ? undefined : token;
+
+  // WS-sourced skills (reads from codemodeStatus pushed via monitoring WS)
+  const skillsQuery = useSkills(isReady);
+  const skills = skillsQuery.data?.skills ?? [];
+  const { enableSkill, disableSkill } = useSkillActions();
+
+  const toggleSkill = useCallback(
+    (skillId: string) => {
+      const skill = skills.find(s => s.id === skillId);
+      if (skill?.status === 'available') {
+        enableSkill(skillId);
+      } else {
+        disableSkill(skillId);
+      }
+    },
+    [skills, enableSkill, disableSkill],
+  );
 
   const authFetch = useCallback(
     (url: string, opts: RequestInit = {}) =>
@@ -228,75 +255,7 @@ const AgentSkillsInner: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
     return () => {
       isCancelled = true;
     };
-  }, [agentBaseUrl, authFetch]);
-
-  // Fetch skill information from the agent's spec endpoint
-  useEffect(() => {
-    if (!isReady) return;
-
-    const fetchSkills = async () => {
-      try {
-        const res = await authFetch(
-          `${agentBaseUrl}/api/v1/agents/${agentId}/spec`,
-        );
-        if (!res.ok) return;
-        const spec = await res.json();
-        const skillNames: string[] = spec?.skills ?? [];
-
-        // For each skill name, build a SkillInfo from the catalog when possible.
-        const { getSkillSpec } = await import('../specs/skills');
-        const infos: SkillInfo[] = skillNames.map((name: string) => {
-          const baseName = name.includes(':') ? name.split(':')[0] : name;
-          const catalogSpec = getSkillSpec(baseName);
-
-          if (catalogSpec?.path) {
-            // Variant 3: path-based skill
-            return {
-              name: catalogSpec.name,
-              description: catalogSpec.description || `Skill: ${baseName}`,
-              variant: 'path' as const,
-              path: catalogSpec.path,
-              tags: catalogSpec.tags ? [...catalogSpec.tags] : [],
-              emoji: catalogSpec.emoji,
-            };
-          }
-
-          if (catalogSpec?.package && catalogSpec?.method) {
-            // Variant 2: package-based skill
-            return {
-              name: catalogSpec.name,
-              description: catalogSpec.description || `Skill: ${baseName}`,
-              variant: 'package' as const,
-              package: catalogSpec.package,
-              method: catalogSpec.method,
-              license: catalogSpec.license,
-              compatibility: catalogSpec.compatibility,
-              allowedTools: catalogSpec.allowedTools,
-              skillMetadata: catalogSpec.skillMetadata,
-              tags: catalogSpec.tags ? [...catalogSpec.tags] : [],
-              emoji: catalogSpec.emoji,
-            };
-          }
-
-          // Variant 1: name-based (module discovery)
-          return {
-            name: catalogSpec?.name ?? baseName,
-            description: catalogSpec?.description ?? `Skill: ${baseName}`,
-            variant: 'module' as const,
-            module: catalogSpec?.module ?? `agent_skills.skills.${baseName}`,
-            tags: catalogSpec?.tags ? [...catalogSpec.tags] : [],
-            emoji: catalogSpec?.emoji,
-          };
-        });
-
-        setSkills(infos);
-      } catch {
-        // Non-fatal: skill display is informational
-      }
-    };
-
-    void fetchSkills();
-  }, [isReady, agentId, agentBaseUrl, authFetch]);
+  }, [agentBaseUrl, agentName, authFetch]);
 
   if (!isReady && runtimeStatus !== 'error') {
     return (
@@ -356,6 +315,7 @@ const AgentSkillsInner: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
             showNewChatButton={true}
             showClearButton={false}
             showTokenUsage={true}
+            showSkillsMenu={true}
             autoFocus
             height="100%"
             runtimeId={agentId}
@@ -395,7 +355,7 @@ const AgentSkillsInner: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
               {
                 title: '🐙 GitHub repos',
                 message:
-                  'Use the GitHub skill to list the public repositories for the "datalayer" organization.',
+                  'Use the GitHub skill to show two sections: first, the top 3 recently updated public repositories from the datalayer organization; second, my top 3 recently updated private repositories. Keep the output clear and concise.',
               },
               {
                 title: '📄 Read a PDF',
@@ -445,16 +405,24 @@ const AgentSkillsInner: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
               </Box>
             </Heading>
             <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
-              Loaded: {skills.length} skill{skills.length !== 1 ? 's' : ''}
+              {skills.length} skill{skills.length !== 1 ? 's' : ''} &middot;{' '}
+              {skills.filter(s => s.status === 'loaded').length} loaded &middot;{' '}
+              {skills.filter(s => s.status === 'enabled').length} pending
             </Text>
           </Box>
           <Box sx={{ p: 2, overflow: 'auto', flex: 1 }}>
             {skills.length === 0 ? (
               <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
-                No skills loaded.
+                Waiting for skills snapshot...
               </Text>
             ) : (
-              skills.map(skill => <SkillCard key={skill.name} skill={skill} />)
+              skills.map(skill => (
+                <SkillCard
+                  key={skill.id}
+                  skill={skill}
+                  onToggle={toggleSkill}
+                />
+              ))
             )}
 
             <Box
@@ -468,24 +436,30 @@ const AgentSkillsInner: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
               }}
             >
               <Heading as="h5" sx={{ fontSize: 0, mb: 1 }}>
-                Skill Spec Variants
+                Skill Statuses
               </Heading>
               <Box sx={{ fontSize: 0, color: 'fg.muted' }}>
                 <Box
                   sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}
                 >
-                  <BeakerIcon size={12} />
-                  <Text>
-                    <strong>Path-based:</strong> Discovered from a local
-                    SKILL.md directory path
-                  </Text>
+                  <Label size="small" variant="secondary">
+                    available
+                  </Label>
+                  <Text>In catalog, not yet enabled</Text>
+                </Box>
+                <Box
+                  sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}
+                >
+                  <Label size="small" variant="attention">
+                    enabled
+                  </Label>
+                  <Text>Enabled, loading pending</Text>
                 </Box>
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <PackageIcon size={12} />
-                  <Text>
-                    <strong>Module-based:</strong> Python module or package +
-                    method with frontmatter
-                  </Text>
+                  <Label size="small" variant="success">
+                    loaded
+                  </Label>
+                  <Text>SKILL.md loaded, in system prompt</Text>
                 </Box>
               </Box>
             </Box>

@@ -122,18 +122,23 @@ def build_mcp_status() -> dict[str, Any] | None:
 
 
 def build_codemode_status() -> dict[str, Any] | None:
-    """Build codemode status dict (sync — safe to call from async context)."""
+    """Build codemode status dict (sync — safe to call from async context).
+
+    Uses the server-side SkillsArea for per-skill status instead of the
+    legacy list-based approach.  Each skill in the ``skills`` list carries
+    a ``status`` field (``available`` | ``enabled`` | ``loaded``).
+    """
     from agent_runtimes.routes.configure import (
         _codemode_state,
-        _get_available_skills,
         _get_sandbox_status,
     )
 
     try:
         from agent_runtimes.routes.agui import get_all_agui_adapters
+        from agent_runtimes.services.skills_area import get_skills_area
 
-        available_skills = _get_available_skills()
-        active_skill_names = _codemode_state["skills"]
+        skills_area = get_skills_area()
+        _ensure_skills_area_seeded(skills_area)
 
         adapters = get_all_agui_adapters()
         codemode_enabled = _codemode_state["enabled"]
@@ -148,17 +153,28 @@ def build_codemode_status() -> dict[str, Any] | None:
                 except Exception:
                     pass
 
-        active_skills = [s for s in available_skills if s["name"] in active_skill_names]
         sandbox_status = _get_sandbox_status()
 
         return {
             "enabled": codemode_enabled,
-            "skills": active_skills,
-            "available_skills": available_skills,
+            "skills": skills_area.to_snapshot_list(),
+            "available_skills": skills_area.to_snapshot_list(),
             "sandbox": sandbox_status.model_dump() if sandbox_status else None,
         }
     except Exception:
         return None
+
+
+def _ensure_skills_area_seeded(skills_area: Any) -> None:
+    """Seed SkillsArea from configured catalog when currently empty."""
+    if skills_area.list_skills():
+        return
+    try:
+        from agent_runtimes.routes.configure import _get_available_skills
+
+        skills_area.seed_available(_get_available_skills())
+    except Exception as exc:
+        logger.debug("[skills:seed] failed to seed SkillsArea: %s", exc)
 
 
 # ─── Monitoring payload assembly ──────────────────────────────────────
@@ -268,6 +284,64 @@ async def _flush_otel_service(auth_token: str | None = None) -> None:
                 )
     except Exception as exc:
         logger.debug("[otel:flush] failed: %s", exc)
+
+
+# ─── Skill enable/disable via WebSocket ───────────────────────────────
+
+
+async def _handle_skill_enable(
+    skill_id: str,
+    agent_id: str | None,
+    websocket: Any,
+    list_approvals: Any | None,
+) -> None:
+    """Handle a skill_enable WS message.
+
+    Enables the skill. Loading happens lazily when building the prompt,
+    so the UI can reflect the intermediate ``enabled`` state.
+    """
+    from agent_runtimes.services.skills_area import get_skills_area
+
+    skills_area = get_skills_area()
+    _ensure_skills_area_seeded(skills_area)
+    skills_area.enable_skill(skill_id)
+    logger.info("[ws:skill_enable] skill_id=%s agent_id=%s", skill_id, agent_id)
+    # Push an immediate snapshot so the frontend sees the change
+    await _push_fresh_snapshot(agent_id, websocket, list_approvals)
+
+
+async def _handle_skill_disable(
+    skill_id: str,
+    agent_id: str | None,
+    websocket: Any,
+    list_approvals: Any | None,
+) -> None:
+    """Handle a skill_disable WS message."""
+    from agent_runtimes.services.skills_area import get_skills_area
+
+    skills_area = get_skills_area()
+    _ensure_skills_area_seeded(skills_area)
+    skills_area.disable_skill(skill_id)
+    logger.info("[ws:skill_disable] skill_id=%s agent_id=%s", skill_id, agent_id)
+    await _push_fresh_snapshot(agent_id, websocket, list_approvals)
+
+
+async def _push_fresh_snapshot(
+    agent_id: str | None,
+    websocket: Any,
+    list_approvals: Any | None,
+) -> None:
+    """Build and send a fresh snapshot over the websocket."""
+    fresh = (
+        await build_monitoring_snapshot_payload(agent_id, list_approvals=list_approvals)
+    ).model_dump(by_alias=True)
+    snap_msg = AgentStreamMessage.create(
+        type="agent.snapshot",
+        payload=fresh,
+        agent_id=agent_id,
+    ).model_dump(by_alias=True)
+    await websocket.send_json(snap_msg)
+    logger.debug("[ws:send] type=agent.snapshot (skill-update) agent_id=%s", agent_id)
 
 
 # ─── WebSocket stream loop ───────────────────────────────────────────
@@ -387,6 +461,20 @@ async def stream_loop(
 
                             elif msg_type == "request_otel_flush":
                                 await _flush_otel_service(websocket_user_jwt_token)
+
+                            elif msg_type == "skill_enable":
+                                skill_id = payload.get("skillId")
+                                if isinstance(skill_id, str):
+                                    await _handle_skill_enable(
+                                        skill_id, agent_id, websocket, list_approvals
+                                    )
+
+                            elif msg_type == "skill_disable":
+                                skill_id = payload.get("skillId")
+                                if isinstance(skill_id, str):
+                                    await _handle_skill_disable(
+                                        skill_id, agent_id, websocket, list_approvals
+                                    )
 
                     except Exception as exc:
                         logger.debug("[ws:recv] ignored client message error: %s", exc)

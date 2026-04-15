@@ -60,7 +60,11 @@ export {
  * ChatBase infrastructure hooks.
  */
 export { useConfig } from './useConfig';
-export { useSkills } from './useSkills';
+export {
+  useSkills,
+  useSkillActions,
+  useAgentRuntimeLoadedSkills as useAgentLoadedSkills,
+} from './useSkills';
 export { useContextSnapshot } from './useContextSnapshot';
 export { useSandbox } from './useSandbox';
 
@@ -132,11 +136,6 @@ export {
   useAgentCatalogStore,
   type AgentCatalogStoreState,
 } from './useAgentsCatalog';
-
-/**
- * Agent registry hook.
- */
-export { useAgentRegistry } from './useAgentsRegistry';
 
 /**
  * Agents Service REST API (deprecated).

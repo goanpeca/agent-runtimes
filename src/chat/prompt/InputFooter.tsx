@@ -43,6 +43,7 @@ export interface InputToolbarProps {
   input: string;
   setInput: (value: string) => void;
   isLoading: boolean;
+  connectionConfirmed: boolean;
   placeholder?: string;
   autoFocus: boolean;
   focusTrigger?: number;
@@ -107,6 +108,7 @@ export function InputToolbar({
   input,
   setInput,
   isLoading,
+  connectionConfirmed,
   placeholder,
   autoFocus,
   focusTrigger,
@@ -151,6 +153,7 @@ export function InputToolbar({
       <InputPrompt
         placeholder={placeholder || 'Type a message...'}
         isLoading={isLoading}
+        readOnly={!connectionConfirmed}
         onSend={onSend}
         onStop={onStop}
         autoFocus={autoFocus}
@@ -527,12 +530,39 @@ function SkillsMenu({
                     }}
                   >
                     <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Text
-                        id={`toggle-skill-${skill.id}`}
-                        sx={{ fontWeight: 'semibold' }}
+                      <Box
+                        sx={{ display: 'flex', alignItems: 'center', gap: 1 }}
                       >
-                        {skill.name}
-                      </Text>
+                        <Text
+                          id={`toggle-skill-${skill.id}`}
+                          sx={{ fontWeight: 'semibold' }}
+                        >
+                          {skill.name}
+                        </Text>
+                        {skill.status && (
+                          <Text
+                            sx={{
+                              fontSize: '10px',
+                              px: 1,
+                              borderRadius: 2,
+                              bg:
+                                skill.status === 'loaded'
+                                  ? 'success.subtle'
+                                  : skill.status === 'enabled'
+                                    ? 'attention.subtle'
+                                    : 'neutral.subtle',
+                              color:
+                                skill.status === 'loaded'
+                                  ? 'success.fg'
+                                  : skill.status === 'enabled'
+                                    ? 'attention.fg'
+                                    : 'fg.muted',
+                            }}
+                          >
+                            {skill.status}
+                          </Text>
+                        )}
+                      </Box>
                       {skill.description && (
                         <Text
                           sx={{
