@@ -929,7 +929,7 @@ export const DEMO_ONE_TRIGGER_APPROVAL_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `A demonstration agent for the "once" trigger type with manual tool approval. When launched, the agent executes its trigger prompt once and invokes the runtime-sensitive-echo tool, which requires manual approval before execution. After completion, the runtime is terminated automatically.`,
   tags: ['demo', 'trigger', 'once', 'lifecycle', 'approval'],
   enabled: true,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [],
   skills: [],
   tools: [TOOL_MAP['runtime-sensitive-echo:0.0.1']],
@@ -973,7 +973,7 @@ export const DEMO_ONE_TRIGGER_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `A demonstration agent for the "once" trigger type. When launched, the agent executes its trigger prompt exactly once, emits AGENT_STARTED and AGENT_ENDED lifecycle events, and then terminates the runtime automatically.`,
   tags: ['demo', 'trigger', 'once', 'lifecycle'],
   enabled: true,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [],
   skills: [
     toAgentSkillSpec(SKILL_MAP['github:0.0.1']),

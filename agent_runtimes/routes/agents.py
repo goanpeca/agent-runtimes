@@ -115,6 +115,21 @@ def set_api_prefix(prefix: str) -> None:
     _api_prefix = prefix
 
 
+def _extract_trigger_config(spec_obj: Any) -> dict[str, Any]:
+    """Extract a trigger config dict from a spec-like object."""
+    trigger_raw: Any | None = None
+    if isinstance(spec_obj, dict):
+        trigger_raw = spec_obj.get("trigger")
+    elif hasattr(spec_obj, "model_dump"):
+        try:
+            trigger_raw = spec_obj.model_dump(by_alias=True).get("trigger")
+        except Exception:
+            trigger_raw = None
+    if trigger_raw is None:
+        trigger_raw = getattr(spec_obj, "trigger", None)
+    return trigger_raw if isinstance(trigger_raw, dict) else {}
+
+
 # ============================================================================
 # Agent Spec Library Routes
 # ============================================================================
@@ -3391,10 +3406,24 @@ async def configure_from_spec_endpoint(
 # ── Trigger / Run ────────────────────────────────────────────────────────
 
 
+class OAuthIdentity(BaseModel):
+    """Validated OAuth identity payload for trigger run scoping."""
+
+    provider: str = Field(min_length=1)
+    accessToken: str = Field(min_length=1)
+
+
 class TriggerRunRequest(BaseModel):
     """Body for POST /{agent_id}/trigger/run."""
 
     source: str = "once"
+    identities: list[OAuthIdentity] = Field(
+        default_factory=list,
+        description=(
+            "Optional OAuth identities to scope this trigger run. "
+            "Each entry should include provider and accessToken."
+        ),
+    )
 
 
 @router.post("/{agent_id}/trigger/run")
@@ -3417,15 +3446,29 @@ async def trigger_run(
     trigger_config: dict[str, Any] = {}
     agent_spec_id: str = agent_id  # fallback
 
-    # Try to find the spec for this agent
-    for spec_id, spec in AGENT_SPECS.items():
-        if agent_id.endswith(spec_id.replace("_", "-")) or spec_id in agent_id:
-            agent_spec_id = spec_id
-            spec_data = spec if isinstance(spec, dict) else spec.__dict__
-            trigger_raw = spec_data.get("trigger", {})
-            if isinstance(trigger_raw, dict):
-                trigger_config = trigger_raw
-            break
+    # Preferred source: stored creation spec for this concrete agent.
+    stored_spec = get_stored_agent_spec(agent_id) or {}
+    if stored_spec:
+        trigger_config = _extract_trigger_config(stored_spec)
+        agent_spec_id = str(
+            stored_spec.get("agent_spec_id")
+            or stored_spec.get("agentSpecId")
+            or agent_spec_id
+        )
+
+    # If stored spec has only an agent_spec_id (common in SaaS), load library spec.
+    if not trigger_config and agent_spec_id and agent_spec_id != agent_id:
+        lib_spec = get_library_agent_spec(agent_spec_id)
+        if lib_spec is not None:
+            trigger_config = _extract_trigger_config(lib_spec)
+
+    # Legacy fallback: derive by fuzzy-matching spec id from runtime-generated agent_id.
+    if not trigger_config:
+        for spec_id, spec in AGENT_SPECS.items():
+            if agent_id.endswith(spec_id.replace("_", "-")) or spec_id in agent_id:
+                agent_spec_id = spec_id
+                trigger_config = _extract_trigger_config(spec)
+                break
 
     # Extract user token from Authorization header
     auth_header = request.headers.get("Authorization", "")
@@ -3446,6 +3489,7 @@ async def trigger_run(
 
     import asyncio
 
+    from agent_runtimes.context.identities import IdentityContextManager
     from agent_runtimes.invoker import get_invoker
 
     trigger_type = body.source or "once"
@@ -3468,7 +3512,25 @@ async def trigger_run(
     logger.info(
         "Trigger/run: scheduling '%s' invoker for agent '%s'", trigger_type, agent_id
     )
-    asyncio.ensure_future(invoker.invoke(trigger_config))
+
+    identities = [identity.model_dump() for identity in (body.identities or [])]
+
+    async def _invoke_with_identity_context() -> None:
+        async with IdentityContextManager(identities):
+            await invoker.invoke(trigger_config)
+
+    def _log_invoke_task_result(task: asyncio.Task[None]) -> None:
+        try:
+            task.result()
+        except Exception:
+            logger.exception(
+                "Trigger/run: '%s' invoker failed for agent '%s'",
+                trigger_type,
+                agent_id,
+            )
+
+    task = asyncio.create_task(_invoke_with_identity_context())
+    task.add_done_callback(_log_invoke_task_result)
 
     return {
         "success": True,
