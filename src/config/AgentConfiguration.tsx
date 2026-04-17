@@ -1100,9 +1100,8 @@ export const AgentConfiguration: React.FC<AgentConfigurationProps> = ({
             sx={{ width: '100%' }}
           >
             <Select.Option value="">Default</Select.Option>
-            <Select.Option value="local-eval">local-eval</Select.Option>
+            <Select.Option value="eval">eval</Select.Option>
             <Select.Option value="jupyter">jupyter</Select.Option>
-            <Select.Option value="local-jupyter">local-jupyter</Select.Option>
           </Select>
         </FormControl>
       </Box>
@@ -1242,8 +1241,7 @@ export const AgentConfiguration: React.FC<AgentConfigurationProps> = ({
               <Box>
                 <Text sx={{ fontSize: 1 }}>Use Jupyter Sandbox</Text>
                 <Text sx={{ fontSize: 0, color: 'fg.muted', display: 'block' }}>
-                  Execute code in a Jupyter Sandbox instead of local-eval
-                  Sandbox
+                  Execute code in a Jupyter Sandbox instead of eval Sandbox
                 </Text>
               </Box>
             </Box>

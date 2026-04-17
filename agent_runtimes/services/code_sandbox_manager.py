@@ -9,13 +9,13 @@
 Code Sandbox Manager for Agent Runtimes.
 
 This module provides a centralized manager for code sandbox instances,
-allowing runtime configuration of the sandbox variant (local-eval or local-jupyter).
+allowing runtime configuration of the sandbox variant (eval or jupyter).
 
 It also provides :class:`ManagedSandbox`, a transparent proxy that
 delegates every call to the manager's current sandbox.  All consumers
 (CodemodeToolset, SandboxExecutor, …) should receive a ``ManagedSandbox``
 instead of a concrete sandbox so that when the manager is reconfigured
-(e.g. switching from ``local-eval`` to ``local-jupyter`` via the
+(e.g. switching from ``eval`` to ``jupyter`` via the
 ``/mcp-servers/start`` API), every component automatically uses the
 new sandbox without being rebuilt.
 
@@ -30,7 +30,7 @@ Usage:
 
     # Configure for Jupyter sandbox
     manager.configure(
-        variant="local-jupyter",
+        variant="jupyter",
         jupyter_url="http://localhost:8888",
         jupyter_token="my-token",
     )
@@ -42,6 +42,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from threading import Lock
@@ -54,7 +55,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-SandboxVariant = Literal["local-eval", "local-jupyter", "jupyter"]
+SandboxVariant = Literal["eval", "jupyter"]
 
 
 @dataclass
@@ -64,8 +65,8 @@ class SandboxConfig:
 
     Attributes:
         variant: The sandbox variant to use.
-        jupyter_url: The Jupyter server URL (only for local-jupyter variant).
-        jupyter_token: The Jupyter server token (only for local-jupyter variant).
+        jupyter_url: The Jupyter server URL (only for jupyter variant).
+        jupyter_token: The Jupyter server token (only for jupyter variant).
         mcp_proxy_url: The MCP tool proxy URL for two-container setups.
             When set, remote sandboxes will call tools via HTTP to this URL
             instead of trying to use stdio MCP processes directly.
@@ -74,7 +75,7 @@ class SandboxConfig:
             Example for K8s: "http://agent-runtimes:8765/api/v1/mcp/proxy"
     """
 
-    variant: SandboxVariant = "local-eval"
+    variant: SandboxVariant = "eval"
     jupyter_url: str | None = None
     jupyter_token: str | None = None
     mcp_proxy_url: str | None = None
@@ -86,7 +87,7 @@ class ManagedSandbox:
     Transparent proxy that always delegates to the manager's current sandbox.
 
     When the :class:`CodeSandboxManager` is reconfigured (e.g. switching
-    from ``local-eval`` to ``local-jupyter``), the proxy automatically
+    from ``eval`` to ``jupyter``), the proxy automatically
     picks up the new sandbox.  Consumers that hold a reference to this
     proxy never need to be rebuilt or notified.
 
@@ -337,8 +338,8 @@ class CodeSandboxManager:
     - Per-agent sandbox isolation (each agent gets its own sandbox)
 
     The manager supports three sandbox variants:
-    - local-eval: Uses Python exec() for code execution (default)
-    - local-jupyter: Connects to an *existing* Jupyter server (URL required)
+    - eval: Uses Python exec() for code execution (default)
+    - jupyter: Connects to an *existing* Jupyter server (URL required)
     - jupyter: Delegates to code_sandboxes to start its own Jupyter server
       on a random free port (no external URL needed)
     """
@@ -395,7 +396,7 @@ class CodeSandboxManager:
     @property
     def is_jupyter(self) -> bool:
         """Check if the current variant is Jupyter-based."""
-        return self._config.variant == "local-jupyter"
+        return self._config.variant == "jupyter"
 
     def configure(
         self,
@@ -418,7 +419,7 @@ class CodeSandboxManager:
             mcp_proxy_url: The MCP tool proxy URL for two-container setups.
                 When set, remote sandboxes will call tools via HTTP to this URL.
             env_vars: Environment variables to inject into the sandbox.
-                For local-jupyter, these are set in the Jupyter kernel's
+                For jupyter, these are set in the Jupyter kernel's
                 os.environ so that executed code can access them (e.g. API keys).
         """
         with self._sandbox_lock:
@@ -461,7 +462,7 @@ class CodeSandboxManager:
             # If variant changed or we're reconfiguring jupyter, stop existing sandbox
             if self._sandbox is not None:
                 config_changed = old_variant != self._config.variant or (
-                    self._config.variant == "local-jupyter" and jupyter_url
+                    self._config.variant == "jupyter" and jupyter_url
                 )
                 if config_changed:
                     logger.info(
@@ -498,7 +499,7 @@ class CodeSandboxManager:
             jupyter_sandbox_url: The Jupyter server URL, optionally with token.
             mcp_proxy_url: The MCP tool proxy URL for two-container setups.
                 If not provided, will default to http://127.0.0.1:8765/api/v1/mcp/proxy
-                for local-jupyter variant (assumes colocated containers).
+                for jupyter variant (assumes colocated containers).
             env_vars: Environment variables to inject into the sandbox kernel
                 (e.g. API keys decoded by the companion service).
         """
@@ -509,7 +510,7 @@ class CodeSandboxManager:
             mcp_proxy_url = "http://127.0.0.1:8765/api/v1/mcp/proxy"
 
         self.configure(
-            variant="local-jupyter",
+            variant="jupyter",
             jupyter_url=jupyter_sandbox_url,
             mcp_proxy_url=mcp_proxy_url,
             env_vars=env_vars,
@@ -537,9 +538,9 @@ class CodeSandboxManager:
                 self._sandbox.start()
                 logger.info(f"Started {self._config.variant} sandbox")
                 # Inject env vars into the sandbox after start.
-                # For local-jupyter this sets os.environ inside the
+                # For jupyter this sets os.environ inside the
                 # Jupyter kernel (which runs in a separate container).
-                # For local-eval this sets them in the agent process.
+                # For eval this sets them in the agent process.
                 self._inject_env_vars(self._sandbox)
             else:
                 logger.debug(
@@ -584,8 +585,8 @@ class CodeSandboxManager:
 
         The proxy delegates every call to whatever concrete sandbox the
         manager currently holds.  When the manager is reconfigured
-        (e.g. ``configure_from_url`` switches from ``local-eval`` to
-        ``local-jupyter``), the proxy automatically picks up the new
+        (e.g. ``configure_from_url`` switches from ``eval`` to
+        ``jupyter``), the proxy automatically picks up the new
         sandbox — consumers never need to be rebuilt.
 
         This is the **recommended** way to obtain a sandbox for long-lived
@@ -600,12 +601,12 @@ class CodeSandboxManager:
         """
         Inject configured env vars into the sandbox.
 
-        For ``local-jupyter`` this runs a small code snippet in the Jupyter
+        For ``jupyter`` this runs a small code snippet in the Jupyter
         kernel to set ``os.environ`` — necessary because the kernel runs in
         a different container and does **not** share the agent-runtimes
         process environment.
 
-        For ``local-eval`` this is a no-op because the eval sandbox shares
+        For ``eval`` this is a no-op because the eval sandbox shares
         the agent-runtimes process, so env vars already set on
         ``os.environ`` by the route handler are visible to executed code.
 
@@ -617,15 +618,12 @@ class CodeSandboxManager:
 
         # Always inject sandbox metadata env vars
         env_vars["DATALAYER_CODE_SANDBOX_VARIANT"] = self._config.variant
-        if (
-            self._config.variant in ("local-jupyter", "jupyter")
-            and self._config.jupyter_url
-        ):
+        if self._config.variant == "jupyter" and self._config.jupyter_url:
             # Strip query string (token) from the URL
             clean_url = self._config.jupyter_url.split("?")[0]
             env_vars["DATALAYER_CODE_SANDBOX_URL"] = clean_url
 
-        if self._config.variant in ("local-jupyter", "jupyter"):
+        if self._config.variant == "jupyter":
             # Build a Python snippet that sets every env var in the kernel.
             lines = ["import os"]
             for name, value in env_vars.items():
@@ -646,7 +644,7 @@ class CodeSandboxManager:
             except Exception as e:
                 logger.warning(f"Error injecting env vars into sandbox: {e}")
         else:
-            # local-eval: set sandbox metadata on os.environ
+            # eval: set sandbox metadata on os.environ
             import os
 
             os.environ["DATALAYER_CODE_SANDBOX_VARIANT"] = self._config.variant
@@ -673,30 +671,33 @@ class CodeSandboxManager:
         """
         effective_variant = variant or self._config.variant
 
-        if effective_variant == "local-eval":
-            from code_sandboxes import LocalEvalSandbox
+        if effective_variant == "eval":
+            from code_sandboxes.eval_sandbox import EvalSandbox
 
-            return LocalEvalSandbox()
-
-        elif effective_variant == "local-jupyter":
-            from code_sandboxes import LocalJupyterSandbox
-
-            if not self._config.jupyter_url:
-                raise ValueError(
-                    "Jupyter URL is required for local-jupyter sandbox variant"
-                )
-
-            return LocalJupyterSandbox(
-                server_url=self._config.jupyter_url,
-                token=self._config.jupyter_token,
-            )
+            return EvalSandbox()
 
         elif effective_variant == "jupyter":
-            # Delegate to code_sandboxes to create AND start its own
-            # Jupyter server on a random free port.  No external URL needed.
-            from code_sandboxes import LocalJupyterSandbox
+            # In sidecar mode, companion must provide a concrete Jupyter URL.
+            # Never start a local fallback server in this mode.
+            if (
+                not self._config.jupyter_url
+                and os.getenv("DATALAYER_RUNTIME_JUPYTER_SIDECAR", "").lower() == "true"
+            ):
+                raise ValueError(
+                    "Jupyter sidecar mode requires jupyter_url before sandbox start"
+                )
 
-            return LocalJupyterSandbox()
+            from code_sandboxes.jupyter_sandbox import JupyterSandbox
+
+            if self._config.jupyter_url:
+                return JupyterSandbox(
+                    server_url=self._config.jupyter_url,
+                    token=self._config.jupyter_token,
+                )
+
+            # No external URL configured: let code_sandboxes start its own
+            # local Jupyter server on a free port.
+            return JupyterSandbox()
 
         else:
             raise ValueError(f"Unknown sandbox variant: {effective_variant}")
@@ -718,20 +719,19 @@ class CodeSandboxManager:
     def create_agent_sandbox(
         self,
         agent_id: str,
-        variant: SandboxVariant = "local-eval",
+        variant: SandboxVariant = "eval",
         env_vars: dict[str, str] | None = None,
     ) -> Sandbox:
         """
         Create a dedicated sandbox for a specific agent.
 
         Each agent gets its own isolated sandbox instance.  For the
-        ``"jupyter"`` variant, ``code_sandboxes.LocalJupyterSandbox``
+        ``"jupyter"`` variant, ``code_sandboxes.JupyterSandbox``
         starts its own Jupyter server on a random free port.
 
         Args:
             agent_id: Unique agent identifier.
-            variant: The sandbox variant (``"local-eval"``, ``"jupyter"``,
-                or ``"local-jupyter"``).
+            variant: The sandbox variant (``"eval"`` or ``"jupyter"``).
             env_vars: Environment variables to inject into the sandbox
                 after it starts.
 
@@ -829,11 +829,11 @@ class CodeSandboxManager:
         # Add sandbox metadata env vars
         env_vars = dict(env_vars)
         env_vars["DATALAYER_CODE_SANDBOX_VARIANT"] = variant
-        if variant in ("local-jupyter", "jupyter") and self._config.jupyter_url:
+        if variant == "jupyter" and self._config.jupyter_url:
             clean_url = self._config.jupyter_url.split("?")[0]
             env_vars["DATALAYER_CODE_SANDBOX_URL"] = clean_url
 
-        if variant in ("local-jupyter", "jupyter"):
+        if variant == "jupyter":
             lines = ["import os"]
             for name, value in env_vars.items():
                 lines.append(f"os.environ[{name!r}] = {value!r}")
@@ -894,8 +894,8 @@ class CodeSandboxManager:
 
         # Compute python_path (what gets added to sys.path)
         # For Jupyter/remote sandboxes, it's /tmp
-        # For local-eval, it's the parent of generated_path
-        if self._config.variant in ("local-jupyter", "jupyter", "datalayer-runtime"):
+        # For eval, it's the parent of generated_path
+        if self._config.variant in ("jupyter", "datalayer-runtime"):
             python_path = "/tmp"  # nosec B108
         else:
             python_path = str(Path(generated_path).resolve().parent)
