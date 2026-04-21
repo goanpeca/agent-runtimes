@@ -88,6 +88,7 @@ export interface McpServerStatus {
   status: 'none' | 'not_started' | 'starting' | 'failed' | 'started';
   error?: string;
   tools_count?: number;
+  tools?: Array<{ name: string; description?: string; enabled?: boolean }>;
 }
 
 /**
@@ -100,6 +101,9 @@ export interface McpToolsetsStatusResponse {
   ready_servers: string[];
   failed_servers: Record<string, string>;
   servers: McpServerStatus[];
+  enabled_tools_by_server?: Record<string, string[]>;
+  enabled_tools_count?: number;
+  approved_tools_by_server?: Record<string, string[]>;
 }
 
 import { defaultIndicatorColors } from '@datalayer/primer-addons/lib/theme';

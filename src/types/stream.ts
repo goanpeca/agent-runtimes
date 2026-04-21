@@ -29,6 +29,7 @@ export interface AgentStreamToolApprovalPayload {
   agent_id?: string;
   pod_name?: string;
   tool_name: string;
+  tool_call_id?: string;
   tool_args?: Record<string, unknown>;
   status?: string;
   note?: string | null;
@@ -45,6 +46,47 @@ export interface AgentStreamSnapshotPayload {
   mcpStatus?: McpToolsetsStatusResponse | null;
   codemodeStatus?: CodemodeStatusData | null;
   fullContext?: Record<string, unknown> | null;
+  graphTelemetry?: GraphTelemetryData | null;
+}
+
+/** Graph-level telemetry data from pydantic-graph execution. */
+export interface GraphTelemetryData {
+  agentId?: string;
+  graphName?: string | null;
+  /** Static topology: graph node definitions. */
+  nodes: GraphTelemetryNode[];
+  /** Static topology: edges between nodes. */
+  edges: GraphTelemetryEdge[];
+  /** Dynamic execution trace: per-node events. */
+  events: GraphNodeEvent[];
+  totalNodesExecuted: number;
+  totalDurationMs: number;
+  lastRunStartMs: number;
+  lastRunEndMs: number;
+  runCount: number;
+}
+
+export interface GraphTelemetryNode {
+  id: string;
+  name: string;
+  category: string; // "step" | "end" | "start" | "join" | "decision" | "end_or_continue"
+}
+
+export interface GraphTelemetryEdge {
+  source: string;
+  target: string;
+  label?: string | null;
+  edgeType: string; // "normal" | "parallel" | "decision" | "join"
+}
+
+export interface GraphNodeEvent {
+  nodeId: string;
+  nodeType: string; // "step" | "end" | "join" | "decision" | "parallel" | "error"
+  status: string; // "started" | "completed" | "error"
+  timestampMs: number;
+  durationMs?: number | null;
+  parentNodeId?: string | null;
+  error?: string | null;
 }
 
 /** Codemode status as pushed via the monitoring WebSocket. */
@@ -58,7 +100,13 @@ export interface CodemodeStatusData {
     has_scripts?: boolean;
     has_resources?: boolean;
     status?: SkillStatus;
+    approved?: boolean;
     skill_definition?: string | null;
+    source_variant?: 'module' | 'package' | 'path' | 'unknown';
+    module?: string;
+    package?: string;
+    method?: string;
+    path?: string;
   }>;
   available_skills: Array<{
     id?: string;
@@ -68,7 +116,13 @@ export interface CodemodeStatusData {
     has_scripts?: boolean;
     has_resources?: boolean;
     status?: SkillStatus;
+    approved?: boolean;
     skill_definition?: string | null;
+    source_variant?: 'module' | 'package' | 'path' | 'unknown';
+    module?: string;
+    package?: string;
+    method?: string;
+    path?: string;
   }>;
   sandbox?: Record<string, unknown> | null;
 }

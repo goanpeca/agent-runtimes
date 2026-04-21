@@ -420,8 +420,9 @@ async def get_agent_spec_endpoint(
 
 
 def _get_available_skills() -> list[dict[str, Any]]:
-    """Get all available skills from the skills directory."""
+    """Get all available skills from the skills directory and entrypoints."""
     skills: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
     try:
         # Skills folder can be configured via env var, with fallback to repo root
         skills_folder_path = os.getenv("AGENT_RUNTIMES_SKILLS_FOLDER")
@@ -433,55 +434,101 @@ def _get_available_skills() -> list[dict[str, Any]]:
 
         if not skills_path.exists():
             logger.debug(f"Skills directory not found: {skills_path}")
-            return skills
+        else:
+            # Try to use agent_skills if available
+            try:
+                from agent_skills import AgentSkill
 
-        # Try to use agent_skills if available
+                for skill_md in skills_path.rglob("SKILL.md"):
+                    try:
+                        skill = AgentSkill.from_skill_md(skill_md)
+                        if skill.name not in seen_names:
+                            skills.append(
+                                {
+                                    "id": skill.name,
+                                    "name": skill.name,
+                                    "description": skill.description,
+                                    "tags": skill.tags
+                                    if hasattr(skill, "tags")
+                                    else [],
+                                    "source_variant": "path",
+                                    "path": str(skill_md.parent.name),
+                                }
+                            )
+                            seen_names.add(skill.name)
+                    except Exception as exc:
+                        logger.warning(f"Failed to load skill from {skill_md}: {exc}")
+                        continue
+            except ImportError:
+                # Fallback: scan skill directories manually
+                for skill_dir in skills_path.iterdir():
+                    if skill_dir.is_dir() and (skill_dir / "SKILL.md").exists():
+                        skill_md_path = skill_dir / "SKILL.md"
+                        try:
+                            content = skill_md_path.read_text()
+                            # Parse basic info from SKILL.md
+                            name = skill_dir.name
+                            description = ""
+                            for line in content.split("\n"):
+                                if line.startswith("# "):
+                                    name = line[2:].strip()
+                                elif (
+                                    line.strip()
+                                    and not line.startswith("#")
+                                    and not description
+                                ):
+                                    description = line.strip()
+                                    break
+                            if name not in seen_names:
+                                skills.append(
+                                    {
+                                        "id": name,
+                                        "name": name,
+                                        "description": description,
+                                        "tags": [],
+                                        "source_variant": "path",
+                                        "path": str(skill_dir.name),
+                                    }
+                                )
+                                seen_names.add(name)
+                        except Exception as exc:
+                            logger.warning(f"Failed to parse {skill_md_path}: {exc}")
+                            continue
+
+        # Also discover skills registered via Python entrypoints
         try:
-            from agent_skills import AgentSkill
+            from agent_skills import discover_entrypoint_skills
 
-            for skill_md in skills_path.rglob("SKILL.md"):
-                try:
-                    skill = AgentSkill.from_skill_md(skill_md)
+            for ep_skill in discover_entrypoint_skills():
+                if ep_skill.name not in seen_names:
+                    module = getattr(ep_skill, "module", None)
+                    package = getattr(ep_skill, "package", None)
+                    method = getattr(ep_skill, "method", None)
+                    _raw_path = getattr(ep_skill, "path", None)
+                    path = str(_raw_path) if _raw_path is not None else None
+                    source_variant = "module"
+                    if package:
+                        source_variant = "package"
+                    elif path:
+                        source_variant = "path"
                     skills.append(
                         {
-                            "name": skill.name,
-                            "description": skill.description,
-                            "tags": skill.tags if hasattr(skill, "tags") else [],
+                            "id": ep_skill.name,
+                            "name": ep_skill.name,
+                            "description": ep_skill.description,
+                            "tags": ep_skill.tags if hasattr(ep_skill, "tags") else [],
+                            "source_variant": source_variant,
+                            "module": module,
+                            "package": package,
+                            "method": method,
+                            "path": path,
                         }
                     )
-                except Exception as exc:
-                    logger.warning(f"Failed to load skill from {skill_md}: {exc}")
-                    continue
+                    seen_names.add(ep_skill.name)
         except ImportError:
-            # Fallback: scan skill directories manually
-            for skill_dir in skills_path.iterdir():
-                if skill_dir.is_dir() and (skill_dir / "SKILL.md").exists():
-                    skill_md_path = skill_dir / "SKILL.md"
-                    try:
-                        content = skill_md_path.read_text()
-                        # Parse basic info from SKILL.md
-                        name = skill_dir.name
-                        description = ""
-                        for line in content.split("\n"):
-                            if line.startswith("# "):
-                                name = line[2:].strip()
-                            elif (
-                                line.strip()
-                                and not line.startswith("#")
-                                and not description
-                            ):
-                                description = line.strip()
-                                break
-                        skills.append(
-                            {
-                                "name": name,
-                                "description": description,
-                                "tags": [],
-                            }
-                        )
-                    except Exception as exc:
-                        logger.warning(f"Failed to parse {skill_md_path}: {exc}")
-                        continue
+            logger.debug("agent_skills not available for entrypoint discovery")
+        except Exception as exc:
+            logger.debug(f"Entrypoint skill discovery failed: {exc}")
 
     except Exception as e:
         logger.error(f"Error scanning skills directory: {e}")
@@ -740,6 +787,11 @@ def _build_sandbox_ws_status(agent_id: str | None = None) -> dict[str, Any]:
                 agent_sandbox = getattr(codemode_toolset, "_sandbox", None)
                 if agent_sandbox is None:
                     agent_sandbox = getattr(codemode_toolset, "sandbox", None)
+
+            # Fall back to the per-agent sandbox created via create_agent_sandbox
+            # (used when codemode is not enabled but sandbox_variant is set).
+            if agent_sandbox is None and hasattr(manager, "get_agent_sandbox"):
+                agent_sandbox = manager.get_agent_sandbox(agent_id)
 
             if agent_sandbox is not None:
                 sandbox_running = True

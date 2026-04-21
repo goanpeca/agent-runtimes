@@ -27,7 +27,7 @@ def _fmt_list(items: list[str]) -> str:
     """Format a list of strings with double quotes for ruff compliance."""
     if not items:
         return "[]"
-    return "[" + ", ".join(f'"{item}"' for item in items) + "]"
+    return "[" + ", ".join(_fmt_py_literal(item) for item in items) + "]"
 
 
 def _fmt_py_literal(value: Any) -> str:
@@ -42,6 +42,44 @@ def _fmt_ts_literal(value: Any) -> str:
     if value is None:
         return "undefined"
     return json.dumps(value, ensure_ascii=False)
+
+
+def _normalize_subagents_for_typescript(value: Any) -> Any:
+    """Convert subagents config keys from YAML snake_case to TS camelCase."""
+    if not isinstance(value, dict):
+        return value
+
+    top_level_map = {
+        "default_model": "defaultModel",
+        "include_general_purpose": "includeGeneralPurpose",
+        "max_nesting_depth": "maxNestingDepth",
+    }
+    subagent_map = {
+        "can_ask_questions": "canAskQuestions",
+        "max_questions": "maxQuestions",
+        "preferred_mode": "preferredMode",
+        "typical_complexity": "typicalComplexity",
+        "typically_needs_context": "typicallyNeedsContext",
+    }
+
+    normalized: dict[str, Any] = {}
+    for key, raw_val in value.items():
+        mapped_key = top_level_map.get(key, key)
+        if mapped_key == "subagents" and isinstance(raw_val, list):
+            normalized_subagents: list[Any] = []
+            for subagent in raw_val:
+                if isinstance(subagent, dict):
+                    normalized_subagent: dict[str, Any] = {}
+                    for sa_key, sa_val in subagent.items():
+                        normalized_subagent[subagent_map.get(sa_key, sa_key)] = sa_val
+                    normalized_subagents.append(normalized_subagent)
+                else:
+                    normalized_subagents.append(subagent)
+            normalized[mapped_key] = normalized_subagents
+        else:
+            normalized[mapped_key] = raw_val
+
+    return normalized
 
 
 def load_yaml_specs(specs_dir: Path) -> List[tuple[str, Dict[str, Any]]]:
@@ -91,7 +129,7 @@ Generated from YAML specifications in specs/agents/
 from typing import Dict
 
 from agent_runtimes.mcp.catalog_mcp_servers import MCP_SERVER_CATALOG
-from agent_runtimes.types import AgentSpec
+from agent_runtimes.types import AgentSpec, SubAgentSpecConfig, SubAgentsConfig
 
 # ============================================================================
 # Agent Specs
@@ -166,7 +204,7 @@ from agent_runtimes.types import AgentSpec
             suggestions = spec.get("suggestions", [])
             suggestions_str = (
                 "[\n        "
-                + ",\n        ".join(f'"{s}"' for s in suggestions)
+                + ",\n        ".join(_fmt_py_literal(s) for s in suggestions)
                 + ",\n    ]"
                 if suggestions
                 else "[]"
@@ -240,6 +278,48 @@ from agent_runtimes.types import AgentSpec
             notifs = spec.get("notifications")
             memory_val = spec.get("memory")
             memory_str = f'"{memory_val}"' if memory_val else "None"
+            pre_hooks_val = spec.get("pre_hooks")
+            post_hooks_val = spec.get("post_hooks")
+            parameters_val = spec.get("parameters")
+            subagents_val = spec.get("subagents")
+
+            # Build subagents code if present
+            subagents_str = "None"
+            if isinstance(subagents_val, dict) and subagents_val.get("subagents"):
+                sa_items = []
+                for sa in subagents_val["subagents"]:
+                    sa_fields = [
+                        f"name={_fmt_py_literal(sa['name'])}",
+                        f"description={_fmt_py_literal(sa['description'])}",
+                        f"instructions={_fmt_py_literal(sa['instructions'])}",
+                    ]
+                    for opt_key in (
+                        "model",
+                        "can_ask_questions",
+                        "max_questions",
+                        "preferred_mode",
+                        "typical_complexity",
+                        "typically_needs_context",
+                    ):
+                        opt_val = sa.get(opt_key)
+                        if opt_val is not None:
+                            sa_fields.append(f"{opt_key}={_fmt_py_literal(opt_val)}")
+                    sa_items.append("SubAgentSpecConfig(" + ", ".join(sa_fields) + ")")
+                sa_list_str = "[" + ", ".join(sa_items) + "]"
+                cfg_parts = [f"subagents={sa_list_str}"]
+                if subagents_val.get("default_model") is not None:
+                    cfg_parts.append(
+                        f"default_model={_fmt_py_literal(subagents_val['default_model'])}"
+                    )
+                if subagents_val.get("include_general_purpose") is not None:
+                    cfg_parts.append(
+                        f"include_general_purpose={_fmt_py_literal(subagents_val['include_general_purpose'])}"
+                    )
+                if subagents_val.get("max_nesting_depth") is not None:
+                    cfg_parts.append(
+                        f"max_nesting_depth={_fmt_py_literal(subagents_val['max_nesting_depth'])}"
+                    )
+                subagents_str = "SubAgentsConfig(" + ", ".join(cfg_parts) + ")"
 
             code += f'''{const_name} = AgentSpec(
     id="{full_agent_id}",
@@ -278,6 +358,10 @@ from agent_runtimes.types import AgentSpec
     authorization_policy={auth_policy_str},
     notifications={_fmt_py_literal(notifs)},
     memory={memory_str},
+    pre_hooks={_fmt_py_literal(pre_hooks_val)},
+    post_hooks={_fmt_py_literal(post_hooks_val)},
+    parameters={_fmt_py_literal(parameters_val)},
+    subagents={subagents_str},
 )
 
 '''
@@ -765,6 +849,13 @@ const FRONTEND_TOOL_MAP: Record<string, any> = {
             notifs = spec.get("notifications")
             memory_val = spec.get("memory")
             memory_ts = f"'{memory_val}'" if memory_val else "undefined"
+            pre_hooks_val = spec.get("pre_hooks")
+            post_hooks_val = spec.get("post_hooks")
+            parameters_val = spec.get("parameters")
+            subagents_val = spec.get("subagents")
+            subagents_ts = _fmt_ts_literal(
+                _normalize_subagents_for_typescript(subagents_val)
+            )
 
             code += f"""export const {const_name}: AgentSpec = {{
   id: '{full_agent_id}',
@@ -803,6 +894,10 @@ const FRONTEND_TOOL_MAP: Record<string, any> = {
   authorizationPolicy: {auth_policy_ts},
   notifications: {_fmt_ts_literal(notifs)},
   memory: {memory_ts},
+  preHooks: {_fmt_ts_literal(pre_hooks_val)},
+  postHooks: {_fmt_ts_literal(post_hooks_val)},
+  parameters: {_fmt_ts_literal(parameters_val)},
+  subagents: {subagents_ts},
 }};
 
 """

@@ -15,12 +15,26 @@ export interface ExampleEntry {
   loader: ExampleLoader;
 }
 
+const DISPLAY_NAME_EXCEPTIONS: [RegExp, string][] = [
+  [/\bAg Ui\b/g, 'AG-UI'],
+  [/\bA2 Ui\b/g, 'A2UI'],
+  [/\bCopilot Kit\b/g, 'CopilotKit'],
+  [/\bGen Ui\b/g, 'Gen UI'],
+  [/\bM C P\b/g, 'MCP'],
+  [/\bOtel\b/g, 'OTEL'],
+  [/\bAgent Specs\b/g, 'Agentspecs'],
+];
+
 function humanizeExampleName(name: string): string {
-  return name
+  let result = name
     .replace(/Example$/, '')
     .replace(/([A-Z])/g, ' $1')
     .replace(/^\s+/, '')
     .trim();
+  for (const [pattern, replacement] of DISPLAY_NAME_EXCEPTIONS) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
 }
 
 function inferTags(id: string): string[] {
@@ -35,6 +49,7 @@ function inferTags(id: string): string[] {
   if (id.includes('Monitoring') || id.includes('Otel'))
     tags.add('observability');
   if (id.includes('Skills')) tags.add('skills');
+  if (id.includes('Subagent')) tags.add('subagents');
   if (id.includes('MCP')) tags.add('mcp');
   return Array.from(tags);
 }
@@ -116,8 +131,8 @@ export const EXAMPLE_ENTRIES: ExampleEntry[] = [
     'AG-UI tool-based generative UI example.',
   ),
   makeEntry(
-    'AgentSpecExample',
-    () => import('./AgentSpecExample'),
+    'AgentSpecsExample',
+    () => import('./AgentSpecsExample'),
     'Configure and run agents from specs and transports.',
   ),
   makeEntry(
@@ -176,6 +191,11 @@ export const EXAMPLE_ENTRIES: ExampleEntry[] = [
     'Guardrails and safety checks for agent runs.',
   ),
   makeEntry(
+    'AgentHooksExample',
+    () => import('./AgentHooksExample'),
+    'Pre-hooks and post-hooks lifecycle execution example.',
+  ),
+  makeEntry(
     'AgentToolApprovalsExample',
     () => import('./AgentToolApprovalsExample'),
     'Tool approval workflows and manual decisions.',
@@ -211,6 +231,11 @@ export const EXAMPLE_ENTRIES: ExampleEntry[] = [
     'Runtime monitoring and live metrics example.',
   ),
   makeEntry(
+    'AgentSubagentsExample',
+    () => import('./AgentSubagentsExample'),
+    'Multi-agent delegation with subagents-pydantic-ai.',
+  ),
+  makeEntry(
     'AgentNotificationsExample',
     () => import('./AgentNotificationsExample'),
     'Notifications and event routing example.',
@@ -219,6 +244,11 @@ export const EXAMPLE_ENTRIES: ExampleEntry[] = [
     'AgentOutputsExample',
     () => import('./AgentOutputsExample'),
     'Structured outputs and rendering patterns.',
+  ),
+  makeEntry(
+    'AgentParametersExample',
+    () => import('./AgentParametersExample'),
+    'Launch-time parameterized agent creation with JSON schema.',
   ),
   makeEntry(
     'AgentTriggersExample',

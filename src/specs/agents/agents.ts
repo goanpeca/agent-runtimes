@@ -27,6 +27,7 @@ import {
 } from '../mcpServers';
 import {
   CRAWL_SKILL_SPEC_0_0_1,
+  DATALAYER_WHOAMI_SKILL_SPEC_0_0_1,
   EVENTS_SKILL_SPEC_0_0_1,
   GITHUB_SKILL_SPEC_0_0_1,
   JOKES_SKILL_SPEC_0_0_1,
@@ -79,6 +80,8 @@ const MCP_SERVER_MAP: Record<string, any> = {
 const SKILL_MAP: Record<string, any> = {
   'crawl:0.0.1': CRAWL_SKILL_SPEC_0_0_1,
   crawl: CRAWL_SKILL_SPEC_0_0_1,
+  'datalayer-whoami:0.0.1': DATALAYER_WHOAMI_SKILL_SPEC_0_0_1,
+  'datalayer-whoami': DATALAYER_WHOAMI_SKILL_SPEC_0_0_1,
   'events:0.0.1': EVENTS_SKILL_SPEC_0_0_1,
   events: EVENTS_SKILL_SPEC_0_0_1,
   'github:0.0.1': GITHUB_SKILL_SPEC_0_0_1,
@@ -143,7 +146,7 @@ export const ANALYZE_CAMPAIGN_PERFORMANCE_AGENT_SPEC_0_0_1: AgentSpec = {
     'social-media',
   ],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [
     MCP_SERVER_MAP['filesystem:0.0.1'],
     MCP_SERVER_MAP['slack:0.0.1'],
@@ -251,6 +254,10 @@ export const ANALYZE_CAMPAIGN_PERFORMANCE_AGENT_SPEC_0_0_1: AgentSpec = {
     slack: '#campaign-analytics',
   },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const ANALYZE_SUPPORT_TICKETS_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -260,7 +267,7 @@ export const ANALYZE_SUPPORT_TICKETS_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `A multi-agent team that triages incoming support tickets, categorizes by urgency and topic, identifies recurring patterns, and generates resolution recommendations with escalation paths.`,
   tags: ['analytics', 'data', 'support', 'tickets'],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [
     MCP_SERVER_MAP['filesystem:0.0.1'],
     MCP_SERVER_MAP['slack:0.0.1'],
@@ -343,6 +350,10 @@ export const ANALYZE_SUPPORT_TICKETS_AGENT_SPEC_0_0_1: AgentSpec = {
     slack: '#support-analysis',
   },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const AUDIT_INVENTORY_LEVELS_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -352,7 +363,7 @@ export const AUDIT_INVENTORY_LEVELS_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `A multi-agent team that monitors inventory levels across warehouses, detects discrepancies between physical and system counts, forecasts demand by SKU, and generates automated reorder recommendations.`,
   tags: ['finance', 'automation', 'inventory', 'supply-chain'],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [
     MCP_SERVER_MAP['filesystem:0.0.1'],
     MCP_SERVER_MAP['slack:0.0.1'],
@@ -431,6 +442,10 @@ export const AUDIT_INVENTORY_LEVELS_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: '',
   notifications: { email: 'linda.m@company.com', slack: '#inventory-ops' },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const AUTOMATE_REGULATORY_REPORTING_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -440,7 +455,7 @@ export const AUTOMATE_REGULATORY_REPORTING_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `A multi-agent team that automates end-to-end regulatory reporting for financial institutions. Ingests data from trading systems, risk engines, and accounting platforms, reconciles positions, computes risk metrics, validates against regulatory rules (Basel III/IV, MiFID II, SOX), and generates submission-ready compliance reports with full audit trails.`,
   tags: ['finance', 'compliance', 'regulatory', 'risk', 'banking', 'audit'],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [
     MCP_SERVER_MAP['filesystem:0.0.1'],
     MCP_SERVER_MAP['slack:0.0.1'],
@@ -543,6 +558,10 @@ export const AUTOMATE_REGULATORY_REPORTING_AGENT_SPEC_0_0_1: AgentSpec = {
     slack: '#regulatory-reporting',
   },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const CLASSIFY_ROUTE_EMAILS_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -552,7 +571,7 @@ export const CLASSIFY_ROUTE_EMAILS_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `A generic email classification and routing agent. Analyzes incoming emails to determine intent (inquiry, complaint, order, support request), assigns priority (critical, high, medium, low), and routes to the appropriate department queue. Works across any industry with email-based workflows.`,
   tags: ['email', 'classification', 'routing', 'horizontal', 'automation'],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['slack:0.0.1']],
   skills: [
     toAgentSkillSpec(SKILL_MAP['github:0.0.1']),
@@ -635,6 +654,10 @@ export const CLASSIFY_ROUTE_EMAILS_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: { slack: '#email-routing', email: 'ops@acme.com' },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const COMPREHENSIVE_SALES_ANALYTICS_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -644,7 +667,7 @@ export const COMPREHENSIVE_SALES_ANALYTICS_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `A multi-agent team that replaces a single KPI monitor with four specialized agents: a Data Collector that pulls real-time CRM metrics, an Anomaly Detector that flags statistical outliers, a Trend Analyzer that identifies patterns and forecasts, and a Report Generator that compiles executive dashboards and sends alerts. Together they deliver deeper insights, faster detection, and richer reporting than any single agent could.`,
   tags: ['sales', 'analytics', 'kpi', 'monitoring', 'horizontal'],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [
     MCP_SERVER_MAP['filesystem:0.0.1'],
     MCP_SERVER_MAP['slack:0.0.1'],
@@ -713,6 +736,10 @@ export const COMPREHENSIVE_SALES_ANALYTICS_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: { slack: '#sales-analytics', email: 'leadership@acme.com' },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const CRAWLER_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -722,7 +749,7 @@ export const CRAWLER_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `Web crawling and research agent that searches the web and GitHub repositories for information.`,
   tags: ['web', 'search', 'research', 'crawler', 'github'],
   enabled: true,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['tavily:0.0.1']],
   skills: [
     toAgentSkillSpec(SKILL_MAP['github:0.0.1']),
@@ -783,6 +810,10 @@ export const CRAWLER_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: undefined,
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const DATA_ACQUISITION_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -792,7 +823,7 @@ export const DATA_ACQUISITION_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `Acquires and manages data from various sources including Kaggle datasets and local filesystem operations.`,
   tags: ['data', 'acquisition', 'kaggle', 'filesystem'],
   enabled: true,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [
     MCP_SERVER_MAP['kaggle:0.0.1'],
     MCP_SERVER_MAP['filesystem:0.0.1'],
@@ -857,19 +888,76 @@ export const DATA_ACQUISITION_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: undefined,
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
+};
+
+export const DATALAYER_AGENT_SPEC_0_0_1: AgentSpec = {
+  id: 'datalayer-agent',
+  version: '0.0.1',
+  name: 'Datalayer Agent',
+  description: `Datalayer-focused assistant that can inspect the authenticated user profile using datalayer-skills.`,
+  tags: ['datalayer', 'iam', 'profile', 'identity'],
+  enabled: false,
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+  mcpServers: [],
+  skills: [toAgentSkillSpec(SKILL_MAP['datalayer-whoami:0.0.1'])],
+  tools: [],
+  frontendTools: [
+    FRONTEND_TOOL_MAP['jupyter-notebook:0.0.1'],
+    FRONTEND_TOOL_MAP['lexical-document:0.0.1'],
+  ],
+  environmentName: 'ai-agents-env',
+  icon: 'person',
+  emoji: '👤',
+  color: '#14B8A6',
+  suggestions: [
+    'Who am I on Datalayer?',
+    'Show my Datalayer profile details',
+    'What roles do I currently have in Datalayer?',
+  ],
+  welcomeMessage:
+    "Hi! I'm the Datalayer Agent. I can help you retrieve and summarize your authenticated Datalayer profile.\n",
+  welcomeNotebook: undefined,
+  welcomeDocument: undefined,
+  sandboxVariant: 'jupyter',
+  systemPrompt: `You are a Datalayer assistant with access to the datalayer-whoami skill. Use it to retrieve the authenticated user's profile when requested. If DATALAYER_API_KEY is missing, clearly ask the user to configure it.
+`,
+  systemPromptCodemodeAddons: undefined,
+  goal: undefined,
+  protocol: undefined,
+  uiExtension: undefined,
+  trigger: undefined,
+  modelConfig: undefined,
+  mcpServerTools: undefined,
+  guardrails: undefined,
+  evals: undefined,
+  codemode: undefined,
+  output: undefined,
+  advanced: undefined,
+  authorizationPolicy: undefined,
+  notifications: undefined,
+  memory: 'ephemeral',
+  preHooks: { packages: ['datalayer_skills>=0.1.0'] },
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const DEMO_FULL_AGENT_SPEC_0_0_1: AgentSpec = {
   id: 'demo-full',
   version: '0.0.1',
   name: 'Demo with MCP, Skills, Tool Approvals...',
-  description: `A full-featured demonstration agent showcasing MCP servers (Tavily web search), skills (GitHub, PDF, crawl, events, text summarizer, jokes), human-in-the-loop tool approval, and frontend tools (Jupyter notebooks, Lexical documents).`,
+  description: `A full-featured demonstration agent showcasing MCP servers (Tavily web search), skills (GitHub, PDF, crawl, events, text summarizer, jokes, datalayer whoami), human-in-the-loop tool approval, and frontend tools (Jupyter notebooks, Lexical documents).`,
   tags: ['demo', 'approval', 'human-in-the-loop', 'utility'],
   enabled: true,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['tavily:0.0.1']],
   skills: [
     toAgentSkillSpec(SKILL_MAP['crawl:0.0.1']),
+    toAgentSkillSpec(SKILL_MAP['datalayer-whoami:0.0.1']),
     toAgentSkillSpec(SKILL_MAP['events:0.0.1']),
     toAgentSkillSpec(SKILL_MAP['github:0.0.1']),
     toAgentSkillSpec(SKILL_MAP['pdf:0.0.1']),
@@ -892,6 +980,7 @@ export const DEMO_FULL_AGENT_SPEC_0_0_1: AgentSpec = {
     'list your tools',
     'Search the web for the latest news on AI agents using Tavily.',
     'List my public GitHub repositories and summarize the most active ones.',
+    'Who am I on Datalayer? Summarize my profile.',
     "Echo with text 'hello' and reason 'audit', then share the result.",
     "Echo 'hello world' and share the result in a short sentence.",
     "Call the runtime_sensitive_echo tool with text 'hello' and reason 'audit', then reply with the tool result.",
@@ -899,7 +988,7 @@ export const DEMO_FULL_AGENT_SPEC_0_0_1: AgentSpec = {
     'Tell me a joke using your skills.',
   ],
   welcomeMessage:
-    "Hi! I'm the Tool Approval Demo agent. I have two echo tools — one runs immediately, the other requires your approval before executing. I can also search the web with Tavily and tell jokes using my skills.\n",
+    "Hi! I'm the Tool Approval Demo agent. I have two echo tools — one runs immediately, the other requires your approval before executing. I can also search the web with Tavily, tell jokes, and retrieve your Datalayer profile.\n",
   welcomeNotebook: undefined,
   welcomeDocument: undefined,
   sandboxVariant: 'jupyter',
@@ -920,6 +1009,79 @@ export const DEMO_FULL_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: undefined,
   memory: 'ephemeral',
+  preHooks: { packages: ['datalayer_skills>=0.1.0'] },
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
+};
+
+export const DEMO_HOOKS_AGENT_SPEC_0_0_1: AgentSpec = {
+  id: 'demo-hooks',
+  version: '0.0.1',
+  name: 'Demo Hooks Agent',
+  description: `Demonstrates pre-hooks and post-hooks executed in the sandbox lifecycle.`,
+  tags: ['demo', 'hooks', 'lifecycle'],
+  enabled: true,
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+  mcpServers: [],
+  skills: [],
+  tools: [TOOL_MAP['runtime-echo:0.0.1']],
+  frontendTools: [],
+  environmentName: 'ai-agents-env',
+  icon: 'zap',
+  emoji: '🪝',
+  color: '#0E7490',
+  suggestions: [
+    'Read the pre-hook marker file at /tmp/agent_runtimes_pre_hook_demo.txt using execute_code.',
+    'Print the hook_ran_at and hook_name variables that the pre-hook set in the sandbox.',
+    "Run execute_code to verify that the 'rich' package was installed by the pre-hook.",
+    'Show me all variables that the pre-hook defined in the sandbox namespace.',
+  ],
+  welcomeMessage:
+    "I ran a pre-hook before starting up. It installed the 'rich' package, wrote a marker file, and set several sandbox variables (hook_name, hook_ran_at, hook_env). Ask me to read the file or inspect those variables.\n",
+  welcomeNotebook: undefined,
+  welcomeDocument: undefined,
+  sandboxVariant: 'eval',
+  systemPrompt: `You are a demo assistant for lifecycle hooks.
+The sandbox pre-hook ran before this agent started and did three things:
+1. Installed the Python package 'rich' (pip install). 2. Wrote a UTF-8 marker file to /tmp/agent_runtimes_pre_hook_demo.txt
+   with the content: "pre-hook executed for demo-hooks at <timestamp>".
+3. Defined these Python variables in the sandbox namespace:
+   - hook_name    (str) - "demo-hooks:pre"
+   - hook_ran_at  (str) - ISO-8601 timestamp of when the pre-hook ran
+   - hook_env     (dict) - subset of os.environ captured at hook time
+
+A post-hook is also configured — it will write /tmp/agent_runtimes_post_hook_demo.txt when the agent shuts down.
+When the user asks about hooks, use execute_code to show concrete evidence: read the marker file, print the variables, or import rich to confirm it was installed.
+`,
+  systemPromptCodemodeAddons: undefined,
+  goal: undefined,
+  protocol: undefined,
+  uiExtension: undefined,
+  trigger: undefined,
+  modelConfig: undefined,
+  mcpServerTools: undefined,
+  guardrails: undefined,
+  evals: undefined,
+  codemode: undefined,
+  output: undefined,
+  advanced: undefined,
+  authorizationPolicy: undefined,
+  notifications: undefined,
+  memory: 'ephemeral',
+  preHooks: {
+    packages: ['rich'],
+    sandbox: [
+      'import datetime\nimport os\nfrom pathlib import Path\n\nhook_name = "demo-hooks:pre"\nhook_ran_at = datetime.datetime.now().isoformat()\nhook_env = {\n    k: os.environ[k]\n    for k in ("PATH", "HOME", "DATALAYER_CODE_SANDBOX_VARIANT")\n    if k in os.environ\n}\n\nPath(\'/tmp/agent_runtimes_pre_hook_demo.txt\').write_text(\n    f\'pre-hook executed for demo-hooks at {hook_ran_at}\\n\',\n    encoding=\'utf-8\',\n)\nprint(f"[demo-hooks] pre-hook done: hook_ran_at={hook_ran_at!r}")\n',
+    ],
+  },
+  postHooks: {
+    sandbox: [
+      "import datetime\nfrom pathlib import Path\n\npost_ran_at = datetime.datetime.now().isoformat()\nPath('/tmp/agent_runtimes_post_hook_demo.txt').write_text(\n    f'post-hook executed for demo-hooks at {post_ran_at}\\n',\n    encoding='utf-8',\n)\nprint(f\"[demo-hooks] post-hook done: post_ran_at={post_ran_at!r}\")\n",
+    ],
+  },
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const DEMO_ONE_TRIGGER_APPROVAL_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -964,6 +1126,10 @@ export const DEMO_ONE_TRIGGER_APPROVAL_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: undefined,
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const DEMO_ONE_TRIGGER_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -1011,6 +1177,81 @@ export const DEMO_ONE_TRIGGER_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: undefined,
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
+};
+
+export const DEMO_PARAMETERS_AGENT_SPEC_0_0_1: AgentSpec = {
+  id: 'demo-parameters',
+  version: '0.0.1',
+  name: 'Demo Parameters Agent',
+  description: `Demonstrates launch-time parameterization with JSON schema validation.`,
+  tags: ['demo', 'parameters', 'schema'],
+  enabled: true,
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+  mcpServers: [],
+  skills: [],
+  tools: [TOOL_MAP['runtime-echo:0.0.1']],
+  frontendTools: [],
+  environmentName: 'ai-agents-env',
+  icon: 'sliders',
+  emoji: '🎛️',
+  color: '#0F766E',
+  suggestions: [
+    'Use execute_code to print(demo_params) from the sandbox, then explain the value.',
+    "Use execute_code to print('demo_params =', demo_params).",
+  ],
+  welcomeMessage:
+    'This runtime was launched for project {{project}} and role {{role}}.\n',
+  welcomeNotebook: undefined,
+  welcomeDocument: undefined,
+  sandboxVariant: 'jupyter',
+  systemPrompt: `You are an assistant dedicated to {{project}}. Assume the user is a {{role}} and answer in a {{tone}} style. A sandbox pre-hook set a Python variable named demo_params with value {{demo_params}}.
+`,
+  systemPromptCodemodeAddons: undefined,
+  goal: undefined,
+  protocol: undefined,
+  uiExtension: undefined,
+  trigger: undefined,
+  modelConfig: undefined,
+  mcpServerTools: undefined,
+  guardrails: undefined,
+  evals: undefined,
+  codemode: undefined,
+  output: undefined,
+  advanced: undefined,
+  authorizationPolicy: undefined,
+  notifications: undefined,
+  memory: 'ephemeral',
+  preHooks: {
+    sandbox: [
+      'demo_params = """{{demo_params}}"""\nprint(f"[demo-parameters] demo_params initialized: {demo_params!r}")\n',
+    ],
+  },
+  postHooks: undefined,
+  parameters: {
+    type: 'object',
+    properties: {
+      demo_params: { type: 'string', title: 'Demo Params', default: 'hello' },
+      project: { type: 'string', title: 'Project', default: 'Orbit' },
+      role: {
+        type: 'string',
+        title: 'Role',
+        enum: ['product analyst', 'engineering lead', 'support specialist'],
+        default: 'product analyst',
+      },
+      tone: {
+        type: 'string',
+        title: 'Tone',
+        enum: ['concise', 'detailed'],
+        default: 'concise',
+      },
+    },
+    required: ['project'],
+  },
+  subagents: undefined,
 };
 
 export const DEMO_SIMPLE_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -1020,7 +1261,7 @@ export const DEMO_SIMPLE_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `A simple conversational agent. No tools, no MCP servers, no skills — just a helpful AI assistant you can chat with.`,
   tags: ['simple', 'chat', 'assistant'],
   enabled: true,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [],
   skills: [toAgentSkillSpec(SKILL_MAP['events:0.0.1'])],
   tools: [TOOL_MAP['runtime-echo:0.0.1']],
@@ -1060,6 +1301,190 @@ export const DEMO_SIMPLE_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: undefined,
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
+};
+
+export const DEMO_SUBAGENTS_AGENT_SPEC_0_0_1: AgentSpec = {
+  id: 'demo-subagents',
+  version: '0.0.1',
+  name: 'Subagents Demo',
+  description: `A demonstration agent that delegates tasks to specialised subagents. It has a researcher subagent for gathering information and a writer subagent for composing clear, structured responses.`,
+  tags: ['demo', 'subagents', 'multi-agent', 'delegation'],
+  enabled: true,
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+  mcpServers: [],
+  skills: [toAgentSkillSpec(SKILL_MAP['events:0.0.1'])],
+  tools: [],
+  frontendTools: [
+    FRONTEND_TOOL_MAP['jupyter-notebook:0.0.1'],
+    FRONTEND_TOOL_MAP['lexical-document:0.0.1'],
+  ],
+  environmentName: 'ai-agents-env',
+  icon: 'people',
+  emoji: '👥',
+  color: '#8B5CF6',
+  suggestions: [
+    'Research the pros and cons of Python async patterns and write a summary.',
+    'Find recent advances in LLM fine-tuning and create a brief report.',
+    'Investigate best practices for REST API design and draft a style guide.',
+    'Analyze the current state of WebAssembly and produce an executive summary.',
+  ],
+  welcomeMessage:
+    "Hi! I'm the Subagents Demo agent. I coordinate a team of specialised helpers: a **Researcher** who gathers information and a **Writer** who turns findings into polished prose. Ask me anything and I'll delegate to the right expert!\n",
+  welcomeNotebook: undefined,
+  welcomeDocument: undefined,
+  sandboxVariant: 'jupyter',
+  systemPrompt: `You are a helpful orchestrator agent. You have access to specialised subagents that you can delegate tasks to. Use the 'task' tool to assign work: - Use the 'researcher' subagent for gathering facts, searching for information, and analysis. - Use the 'writer' subagent for composing text, formatting documents, and editing prose. You can run tasks synchronously (wait for result) or asynchronously (fire and forget, check later). Always summarise the delegated results for the user in a clear, helpful way.
+`,
+  systemPromptCodemodeAddons: undefined,
+  goal: undefined,
+  protocol: undefined,
+  uiExtension: undefined,
+  trigger: undefined,
+  modelConfig: undefined,
+  mcpServerTools: undefined,
+  guardrails: undefined,
+  evals: undefined,
+  codemode: undefined,
+  output: undefined,
+  advanced: undefined,
+  authorizationPolicy: undefined,
+  notifications: undefined,
+  memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: {
+    defaultModel: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+    includeGeneralPurpose: true,
+    maxNestingDepth: 0,
+    subagents: [
+      {
+        name: 'researcher',
+        description:
+          'Researches topics, gathers facts, and provides detailed analysis',
+        instructions:
+          'You are a thorough research assistant. When given a topic: 1. Break it down into key questions 2. Provide well-structured findings with evidence 3. Cite sources or reasoning for each claim 4. Highlight areas of uncertainty or debate Format your response with clear sections and bullet points.\n',
+        preferredMode: 'sync',
+        typicalComplexity: 'moderate',
+        canAskQuestions: true,
+        maxQuestions: 3,
+      },
+      {
+        name: 'writer',
+        description:
+          'Writes clear, structured content based on research or instructions',
+        instructions:
+          'You are a skilled technical writer. When given content to write: 1. Organise information into a logical structure 2. Use clear, concise language appropriate for the audience 3. Include headings, bullet points, and formatting for readability 4. Maintain a professional yet approachable tone Always produce complete, publication-ready text.\n',
+        preferredMode: 'sync',
+        typicalComplexity: 'moderate',
+        canAskQuestions: false,
+      },
+    ],
+  },
+};
+
+export const DEMO_TAVILY_CODEMODE_AGENT_SPEC_0_0_1: AgentSpec = {
+  id: 'demo-tavily-codemode',
+  version: '0.0.1',
+  name: 'Demo Tavily MCP (Codemode)',
+  description: `Demo agent using the Tavily MCP server with codemode conversion enabled.`,
+  tags: ['demo', 'mcp', 'tavily', 'codemode'],
+  enabled: true,
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+  mcpServers: [MCP_SERVER_MAP['tavily:0.0.1']],
+  skills: [],
+  tools: [],
+  frontendTools: [
+    FRONTEND_TOOL_MAP['jupyter-notebook:0.0.1'],
+    FRONTEND_TOOL_MAP['lexical-document:0.0.1'],
+  ],
+  environmentName: 'ai-agents-env',
+  icon: 'code',
+  emoji: '⚙️',
+  color: '#8250DF',
+  suggestions: [
+    'Extract information from the https://datalayer.ai website and use your sandbox to create a variable "about_datalayer" with that information',
+  ],
+  welcomeMessage:
+    "Hi! I'm the Tavily MCP demo agent with codemode enabled. I can use programmatic MCP-converted tools and use the sandbox for follow-up processing.\n",
+  welcomeNotebook: undefined,
+  welcomeDocument: undefined,
+  sandboxVariant: 'jupyter',
+  systemPrompt: `You are a helpful assistant with access to Tavily web search tools converted to programmatic codemode tools. You MUST use the available Tavily tools (tavily_search, tavily_extract) to retrieve information from websites. NEVER try to use Python requests, urllib, or selenium to fetch web pages — always use your Tavily tools. After retrieving information with Tavily, use the sandbox (execute_code) to store results in variables.
+`,
+  systemPromptCodemodeAddons: undefined,
+  goal: undefined,
+  protocol: 'vercel-ai',
+  uiExtension: 'a2ui',
+  trigger: undefined,
+  modelConfig: undefined,
+  mcpServerTools: undefined,
+  guardrails: undefined,
+  evals: undefined,
+  codemode: { enabled: true, token_reduction: '~90%', speedup: '~2x faster' },
+  output: undefined,
+  advanced: undefined,
+  authorizationPolicy: undefined,
+  notifications: undefined,
+  memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
+};
+
+export const DEMO_TAVILY_NO_CODEMODE_AGENT_SPEC_0_0_1: AgentSpec = {
+  id: 'demo-tavily-no-codemode',
+  version: '0.0.1',
+  name: 'Demo Tavily MCP (No Codemode)',
+  description: `Demo agent using the Tavily MCP server directly without codemode conversion.`,
+  tags: ['demo', 'mcp', 'tavily', 'codemode'],
+  enabled: true,
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+  mcpServers: [MCP_SERVER_MAP['tavily:0.0.1']],
+  skills: [],
+  tools: [],
+  frontendTools: [
+    FRONTEND_TOOL_MAP['jupyter-notebook:0.0.1'],
+    FRONTEND_TOOL_MAP['lexical-document:0.0.1'],
+  ],
+  environmentName: 'ai-agents-env',
+  icon: 'globe',
+  emoji: '🌐',
+  color: '#0969DA',
+  suggestions: [
+    'Extract information from the https://datalayer.ai website and use your sandbox to create a variable "about_datalayer" with that information',
+  ],
+  welcomeMessage:
+    "Hi! I'm the Tavily MCP demo agent without codemode. I can use Tavily tools directly and use the sandbox for follow-up processing.\n",
+  welcomeNotebook: undefined,
+  welcomeDocument: undefined,
+  sandboxVariant: 'jupyter',
+  systemPrompt: `You are a helpful assistant with access to Tavily web search tools. You MUST use the tavily_search or tavily_extract MCP tools to retrieve information from websites. NEVER try to use Python requests, urllib, or selenium to fetch web pages — always use your Tavily tools. After retrieving information with Tavily, use the sandbox (execute_code) to store results in variables.
+`,
+  systemPromptCodemodeAddons: undefined,
+  goal: undefined,
+  protocol: 'vercel-ai',
+  uiExtension: 'a2ui',
+  trigger: undefined,
+  modelConfig: undefined,
+  mcpServerTools: undefined,
+  guardrails: undefined,
+  evals: undefined,
+  codemode: { enabled: false },
+  output: undefined,
+  advanced: undefined,
+  authorizationPolicy: undefined,
+  notifications: undefined,
+  memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const END_OF_MONTH_SALES_PERFORMANCE_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -1078,7 +1503,7 @@ export const END_OF_MONTH_SALES_PERFORMANCE_AGENT_SPEC_0_0_1: AgentSpec = {
     'sku',
   ],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['salesforce:0.0.1']],
   skills: [
     toAgentSkillSpec(SKILL_MAP['pdf:0.0.1']),
@@ -1260,6 +1685,10 @@ export const END_OF_MONTH_SALES_PERFORMANCE_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: '',
   notifications: { email: 'cro@company.com', slack: '#sales-performance' },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const EXTRACT_DATA_FROM_FILES_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -1269,7 +1698,7 @@ export const EXTRACT_DATA_FROM_FILES_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `A generic data extraction agent that processes unstructured files (PDFs, scanned documents, spreadsheets, images with text) and extracts structured data — tables, key-value pairs, line items, totals. Outputs clean JSON or CSV ready for downstream systems. Applicable to invoices, receipts, forms, medical records, legal documents, and more.`,
   tags: ['extraction', 'data', 'horizontal', 'automation', 'documents'],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['filesystem:0.0.1']],
   skills: [
     toAgentSkillSpec(SKILL_MAP['pdf:0.0.1']),
@@ -1354,6 +1783,10 @@ export const EXTRACT_DATA_FROM_FILES_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: { slack: '#data-extraction', email: 'data-team@acme.com' },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const FINANCIAL_VIZ_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -1363,7 +1796,7 @@ export const FINANCIAL_VIZ_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `Analyzes financial market data and creates visualizations and charts.`,
   tags: ['finance', 'stocks', 'visualization', 'charts'],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [
     MCP_SERVER_MAP['alphavantage:0.0.1'],
     MCP_SERVER_MAP['chart:0.0.1'],
@@ -1388,7 +1821,7 @@ export const FINANCIAL_VIZ_AGENT_SPEC_0_0_1: AgentSpec = {
     "Welcome! I'm the Financial Visualization Agent. I can help you analyze stock market data, track financial instruments, and create charts to visualize market trends.\n",
   welcomeNotebook: undefined,
   welcomeDocument: undefined,
-  sandboxVariant: 'eval',
+  sandboxVariant: 'local-eval',
   systemPrompt: `You are a financial market analyst with access to Alpha Vantage market data and chart generation tools. You can fetch stock prices, analyze trading volumes, create visualizations, and track market trends. Provide clear insights with relevant data points and generate charts to illustrate patterns.
 `,
   systemPromptCodemodeAddons: `## IMPORTANT: Be Honest About Your Capabilities NEVER claim to have tools or capabilities you haven't verified.
@@ -1424,6 +1857,10 @@ export const FINANCIAL_VIZ_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: undefined,
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const FINANCIAL_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -1433,7 +1870,7 @@ export const FINANCIAL_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `Analyzes financial market data and provides chart-ready insights.`,
   tags: ['finance', 'stocks', 'visualization', 'charts'],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['alphavantage:0.0.1']],
   skills: [toAgentSkillSpec(SKILL_MAP['events:0.0.1'])],
   tools: [],
@@ -1491,6 +1928,10 @@ export const FINANCIAL_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: undefined,
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const GENERATE_WEEKLY_REPORTS_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -1500,7 +1941,7 @@ export const GENERATE_WEEKLY_REPORTS_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `Aggregates data across marketing, sales, and operations departments. Generates structured weekly reports with charts, KPI summaries, trend analysis, and executive-level takeaways.`,
   tags: ['marketing', 'reports', 'weekly', 'analytics', 'automation'],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [
     MCP_SERVER_MAP['filesystem:0.0.1'],
     MCP_SERVER_MAP['slack:0.0.1'],
@@ -1598,6 +2039,10 @@ export const GENERATE_WEEKLY_REPORTS_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: '',
   notifications: { email: 'robert.w@company.com', slack: '#weekly-reports' },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const GITHUB_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -1607,7 +2052,7 @@ export const GITHUB_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `Manages GitHub repositories, issues, and pull requests with email notification capabilities.`,
   tags: ['github', 'git', 'code', 'email'],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['google-workspace:0.0.1']],
   skills: [
     toAgentSkillSpec(SKILL_MAP['github:0.0.1']),
@@ -1668,6 +2113,10 @@ export const GITHUB_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: undefined,
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const INFORMATION_ROUTING_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -1702,7 +2151,7 @@ export const INFORMATION_ROUTING_AGENT_SPEC_0_0_1: AgentSpec = {
     "Hi there! I'm the Information Routing Agent. I can help you manage documents in Google Drive and route information where it needs to go.\n",
   welcomeNotebook: undefined,
   welcomeDocument: undefined,
-  sandboxVariant: 'eval',
+  sandboxVariant: 'local-eval',
   systemPrompt: `You are an information routing specialist with access to Google Drive tools. You can find and manage documents in Drive and automate document workflows. Help users with document management efficiently. Do not use file extension when referring to Google Drive documents. Always use search_drive_files tool before using get_drive_file_content to find parent folder (using only name and mimeType in the query, no other fields!!!).
 `,
   systemPromptCodemodeAddons: `## IMPORTANT: Be Honest About Your Capabilities NEVER claim to have tools or capabilities you haven't verified.
@@ -1738,6 +2187,10 @@ export const INFORMATION_ROUTING_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: undefined,
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const MONITOR_SALES_KPIS_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -1747,7 +2200,7 @@ export const MONITOR_SALES_KPIS_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `Monitor and analyze sales KPIs from the CRM system. Generate daily reports summarizing key performance metrics, identify trends, and flag anomalies. Send notifications when KPIs deviate more than 10% from targets.`,
   tags: ['support', 'chatbot', 'sales', 'kpi', 'monitoring'],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['filesystem:0.0.1']],
   skills: [
     toAgentSkillSpec(SKILL_MAP['github:0.0.1']),
@@ -1850,6 +2303,10 @@ export const MONITOR_SALES_KPIS_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: '',
   notifications: { email: 'marcus.r@company.com', slack: '#sales-kpis' },
   memory: 'mem0',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const OPTIMIZE_DYNAMIC_PRICING_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -1866,7 +2323,7 @@ export const OPTIMIZE_DYNAMIC_PRICING_AGENT_SPEC_0_0_1: AgentSpec = {
     'margins',
   ],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['filesystem:0.0.1']],
   skills: [
     toAgentSkillSpec(SKILL_MAP['pdf:0.0.1']),
@@ -1975,6 +2432,10 @@ export const OPTIMIZE_DYNAMIC_PRICING_AGENT_SPEC_0_0_1: AgentSpec = {
     slack: '#pricing-intelligence',
   },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const OPTIMIZE_GRID_OPERATIONS_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -1991,7 +2452,7 @@ export const OPTIMIZE_GRID_OPERATIONS_AGENT_SPEC_0_0_1: AgentSpec = {
     'sustainability',
   ],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['filesystem:0.0.1']],
   skills: [
     toAgentSkillSpec(SKILL_MAP['pdf:0.0.1']),
@@ -2088,6 +2549,10 @@ export const OPTIMIZE_GRID_OPERATIONS_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: '',
   notifications: { email: 'grid-ops@company.com', slack: '#grid-operations' },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const PROCESS_CITIZEN_REQUESTS_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -2104,7 +2569,7 @@ export const PROCESS_CITIZEN_REQUESTS_AGENT_SPEC_0_0_1: AgentSpec = {
     'transparency',
   ],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['filesystem:0.0.1']],
   skills: [
     toAgentSkillSpec(SKILL_MAP['pdf:0.0.1']),
@@ -2210,6 +2675,10 @@ export const PROCESS_CITIZEN_REQUESTS_AGENT_SPEC_0_0_1: AgentSpec = {
     slack: '#citizen-services',
   },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const PROCESS_CLINICAL_TRIAL_DATA_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -2225,7 +2694,7 @@ export const PROCESS_CLINICAL_TRIAL_DATA_AGENT_SPEC_0_0_1: AgentSpec = {
     'compliance',
   ],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['filesystem:0.0.1']],
   skills: [
     toAgentSkillSpec(SKILL_MAP['pdf:0.0.1']),
@@ -2333,6 +2802,10 @@ export const PROCESS_CLINICAL_TRIAL_DATA_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: '',
   notifications: { email: 'clinical-ops@company.com', slack: '#clinical-data' },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const PROCESS_FINANCIAL_TRANSACTIONS_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -2348,7 +2821,7 @@ export const PROCESS_FINANCIAL_TRANSACTIONS_AGENT_SPEC_0_0_1: AgentSpec = {
     'reconciliation',
   ],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['filesystem:0.0.1']],
   skills: [
     toAgentSkillSpec(SKILL_MAP['pdf:0.0.1']),
@@ -2436,6 +2909,10 @@ export const PROCESS_FINANCIAL_TRANSACTIONS_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: '',
   notifications: { email: 'david.t@company.com', slack: '#finance-ops' },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const SPATIAL_DATA_ANALYSIS_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -2445,7 +2922,7 @@ export const SPATIAL_DATA_ANALYSIS_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `Discovers, acquires, and analyzes geospatial datasets using Earthdata and Eurus tools. Produces map-ready summaries, anomaly diagnostics, and reproducible analysis artifacts for environmental and climate use cases.`,
   tags: ['geospatial', 'climate', 'earth-observation', 'analytics'],
   enabled: true,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [
     MCP_SERVER_MAP['earthdata:0.0.1'],
     MCP_SERVER_MAP['eurus:0.0.1'],
@@ -2492,6 +2969,10 @@ export const SPATIAL_DATA_ANALYSIS_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: undefined,
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const SUMMARIZE_DOCUMENTS_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -2507,7 +2988,7 @@ export const SUMMARIZE_DOCUMENTS_AGENT_SPEC_0_0_1: AgentSpec = {
     'productivity',
   ],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [MCP_SERVER_MAP['filesystem:0.0.1']],
   skills: [
     toAgentSkillSpec(SKILL_MAP['pdf:0.0.1']),
@@ -2589,6 +3070,10 @@ export const SUMMARIZE_DOCUMENTS_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: undefined,
   notifications: { slack: '#document-summaries', email: 'team@acme.com' },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 export const SYNC_CRM_CONTACTS_AGENT_SPEC_0_0_1: AgentSpec = {
@@ -2598,7 +3083,7 @@ export const SYNC_CRM_CONTACTS_AGENT_SPEC_0_0_1: AgentSpec = {
   description: `A multi-agent team that collects and aggregates contact data from multiple CRM sources, analyzes and deduplicates records, writes cleaned data back, and generates sync summary reports.`,
   tags: ['sales', 'crm', 'data-sync', 'deduplication'],
   enabled: false,
-  model: 'bedrock:us.anthropic.claude-3-5-haiku-20241022-v1:0',
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   mcpServers: [
     MCP_SERVER_MAP['filesystem:0.0.1'],
     MCP_SERVER_MAP['slack:0.0.1'],
@@ -2678,6 +3163,10 @@ export const SYNC_CRM_CONTACTS_AGENT_SPEC_0_0_1: AgentSpec = {
   authorizationPolicy: '',
   notifications: { email: 'jennifer.c@company.com', slack: '#crm-sync' },
   memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
 };
 
 // ============================================================================
@@ -2695,10 +3184,16 @@ export const AGENT_SPECS: Record<string, AgentSpec> = {
     COMPREHENSIVE_SALES_ANALYTICS_AGENT_SPEC_0_0_1,
   crawler: CRAWLER_AGENT_SPEC_0_0_1,
   'data-acquisition': DATA_ACQUISITION_AGENT_SPEC_0_0_1,
+  'datalayer-agent': DATALAYER_AGENT_SPEC_0_0_1,
   'demo-full': DEMO_FULL_AGENT_SPEC_0_0_1,
+  'demo-hooks': DEMO_HOOKS_AGENT_SPEC_0_0_1,
   'demo-one-trigger-approval': DEMO_ONE_TRIGGER_APPROVAL_AGENT_SPEC_0_0_1,
   'demo-one-trigger': DEMO_ONE_TRIGGER_AGENT_SPEC_0_0_1,
+  'demo-parameters': DEMO_PARAMETERS_AGENT_SPEC_0_0_1,
   'demo-simple': DEMO_SIMPLE_AGENT_SPEC_0_0_1,
+  'demo-subagents': DEMO_SUBAGENTS_AGENT_SPEC_0_0_1,
+  'demo-tavily-codemode': DEMO_TAVILY_CODEMODE_AGENT_SPEC_0_0_1,
+  'demo-tavily-no-codemode': DEMO_TAVILY_NO_CODEMODE_AGENT_SPEC_0_0_1,
   'end-of-month-sales-performance':
     END_OF_MONTH_SALES_PERFORMANCE_AGENT_SPEC_0_0_1,
   'extract-data-from-files': EXTRACT_DATA_FROM_FILES_AGENT_SPEC_0_0_1,

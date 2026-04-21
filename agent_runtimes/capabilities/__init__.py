@@ -12,8 +12,18 @@ This package provides:
 
 from .factory import (
     build_capabilities_from_agent_spec,
+    build_default_choice_guardrails,
     build_usage_limits_from_agent_spec,
 )
+from .graph_telemetry import (
+    clear_graph_telemetry,
+    get_graph_telemetry,
+    get_graph_telemetry_dict,
+    run_beta_graph_with_telemetry,
+    run_graph_with_telemetry,
+)
+from .llm_context_usage import LLMContextUsageCapability
+from .monitoring import MonitoringCapability
 from .tool_approval import (
     ToolApprovalCapability,
     ToolApprovalConfig,
@@ -23,11 +33,19 @@ from .tool_approval import (
 )
 
 __all__ = [
+    "LLMContextUsageCapability",
+    "MonitoringCapability",
     "ToolApprovalCapability",
     "ToolApprovalConfig",
     "ToolApprovalManager",
     "ToolApprovalRejectedError",
     "ToolApprovalTimeoutError",
     "build_capabilities_from_agent_spec",
+    "build_default_choice_guardrails",
     "build_usage_limits_from_agent_spec",
+    "clear_graph_telemetry",
+    "get_graph_telemetry",
+    "get_graph_telemetry_dict",
+    "run_beta_graph_with_telemetry",
+    "run_graph_with_telemetry",
 ]

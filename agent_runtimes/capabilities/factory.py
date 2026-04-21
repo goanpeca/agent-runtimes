@@ -19,15 +19,19 @@ from .guardrails import (
     CostBudgetCapability,
     DataScopeCapability,
     InputGuardCapability,
+    MCPToolsGuardrailCapability,
     NoRefusalsCapability,
     PermissionCapability,
     PiiDetectorCapability,
     PromptInjectionCapability,
     SecretRedactionCapability,
+    SkillsGuardrailCapability,
     TokenLimitCapability,
     ToolGuardCapability,
     _parse_token_limit,
 )
+from .llm_context_usage import LLMContextUsageCapability
+from .monitoring import MonitoringCapability
 from .otel import OTelHooksCapability
 from .tool_approval import ToolApprovalCapability, ToolApprovalConfig
 
@@ -307,6 +311,53 @@ def build_capabilities_from_agent_spec(
             if monitoring_per_run_budget is None:
                 monitoring_per_run_budget = cost_limit
 
+    # Subagent delegation via subagents-pydantic-ai
+    subagents_config = getattr(agent_spec, "subagents", None)
+    if subagents_config is not None:
+        try:
+            from subagents_pydantic_ai import SubAgentCapability, SubAgentConfig
+
+            sa_cfgs: list[SubAgentConfig] = []
+            for sa in getattr(subagents_config, "subagents", []):
+                sa_cfg: SubAgentConfig = {
+                    "name": sa.name,
+                    "description": sa.description,
+                    "instructions": sa.instructions,
+                }
+                if sa.model is not None:
+                    sa_cfg["model"] = sa.model
+                if sa.can_ask_questions is not None:
+                    sa_cfg["can_ask_questions"] = sa.can_ask_questions
+                if sa.max_questions is not None:
+                    sa_cfg["max_questions"] = sa.max_questions
+                if sa.preferred_mode is not None:
+                    sa_cfg["preferred_mode"] = sa.preferred_mode
+                if sa.typical_complexity is not None:
+                    sa_cfg["typical_complexity"] = sa.typical_complexity
+                if sa.typically_needs_context is not None:
+                    sa_cfg["typically_needs_context"] = sa.typically_needs_context
+                sa_cfgs.append(sa_cfg)
+
+            default_model = getattr(subagents_config, "default_model", None) or getattr(
+                agent_spec, "model", "openai:gpt-4.1"
+            )
+            capabilities.append(
+                SubAgentCapability(
+                    subagents=sa_cfgs,
+                    default_model=default_model,
+                    include_general_purpose=getattr(
+                        subagents_config, "include_general_purpose", True
+                    ),
+                    max_nesting_depth=getattr(subagents_config, "max_nesting_depth", 0),
+                )
+            )
+        except ImportError:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "subagents-pydantic-ai not installed — skipping SubAgentCapability"
+            )
+
     if _env_bool("AGENT_RUNTIMES_ENABLE_CAPABILITY_COST_MONITORING", True) and agent_id:
         capabilities.append(
             CostMonitoringCapability(
@@ -337,4 +388,36 @@ def build_capabilities_from_agent_spec(
             )
         )
 
+    # LLM context usage tracking (centralises per-run token recording).
+    if (
+        _env_bool("AGENT_RUNTIMES_ENABLE_CAPABILITY_LLM_CONTEXT_USAGE", True)
+        and agent_id
+    ):
+        capabilities.append(
+            LLMContextUsageCapability(
+                agent_id=agent_id,
+                enabled=True,
+            )
+        )
+
+    # Monitoring snapshot broadcast (pushes to WebSocket after each run).
+    if _env_bool("AGENT_RUNTIMES_ENABLE_CAPABILITY_MONITORING", True) and agent_id:
+        capabilities.append(
+            MonitoringCapability(
+                agent_id=agent_id,
+                enabled=True,
+            )
+        )
+
+    # Always enforce user-selected skills and MCP tool toggles.
+    capabilities.extend(build_default_choice_guardrails(agent_id=agent_id))
+
     return capabilities
+
+
+def build_default_choice_guardrails(agent_id: str | None = None) -> list[Any]:
+    """Build default guardrails that honor runtime user tool/skill selections."""
+    return [
+        SkillsGuardrailCapability(agent_id=agent_id),
+        MCPToolsGuardrailCapability(agent_id=agent_id),
+    ]

@@ -20,7 +20,7 @@ import inspect
 import logging
 import os
 import traceback
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 import httpx
 from pydantic_ai import UsageLimits
@@ -38,11 +38,10 @@ else:
 
 from pydantic_ai import DeferredToolRequests
 from pydantic_ai.tools import ToolDefinition
-from pydantic_ai.toolsets import ExternalToolset
+from pydantic_ai.toolsets import ExternalToolset, FilteredToolset
 
 from ..adapters.base import BaseAgent
 from ..context.identities import IdentityContextManager, set_request_user_jwt
-from ..context.usage import get_usage_tracker
 from ..events import create_event
 from ..observability.prompt_turn_metrics import (
     extract_identity_hints,
@@ -50,6 +49,7 @@ from ..observability.prompt_turn_metrics import (
     extract_user_id_from_jwt,
     record_prompt_turn_completion,
 )
+from ..streams.loop import get_agent_enabled_mcp_tool_names, get_known_mcp_tool_names
 from .base import BaseTransport
 
 logger = logging.getLogger(__name__)
@@ -69,6 +69,77 @@ async def _wrap_streaming_body(body_iterator: AsyncIterator[str]) -> AsyncIterat
         )
         # Re-raise so the error propagates
         raise
+
+
+async def _presignal_deferred_approvals(
+    body: dict[str, Any],
+    agent_id: str,
+) -> None:
+    """Mark pending local approval records 'approved' before a DeferredToolResults
+    continuation runs.
+
+    In **server mode** the human-approval decision travels via the ai-agents
+    WebSocket and updates ai-agents' store, but never calls
+    ``signal_approval_event()`` on the local asyncio.Event that
+    ``ToolApprovalCapability.before_tool_execute`` waits on.  Without this
+    pre-signal, ``before_tool_execute`` would call ``request_and_wait()`` again
+    on the continuation turn and block forever.
+
+    This function inspects the continuation body for ``approval-responded``
+    ``dynamic-tool`` parts and pre-approves the matching local records so the
+    capability hook's skip-check succeeds immediately.
+    """
+    from datetime import datetime, timezone
+
+    from ..routes.tool_approvals import (
+        _APPROVALS,
+        _APPROVALS_LOCK,
+        signal_approval_event,
+    )
+
+    messages: list[Any] = body.get("messages") or []
+    tool_call_ids: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        parts: list[Any] = msg.get("parts") or []
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if (
+                part.get("type") == "dynamic-tool"
+                and part.get("state") == "approval-responded"
+            ):
+                approval_info = part.get("approval") or {}
+                if approval_info.get("approved") is True:
+                    tool_call_id = part.get("toolCallId")
+                    if isinstance(tool_call_id, str) and tool_call_id:
+                        tool_call_ids.append(tool_call_id)
+
+    if not tool_call_ids:
+        return
+
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    updated: list[tuple[str, str]] = []
+    async with _APPROVALS_LOCK:
+        for record_id, record in list(_APPROVALS.items()):
+            if record.tool_call_id in tool_call_ids and record.status == "pending":
+                _APPROVALS[record_id] = record.model_copy(
+                    update={"status": "approved", "updated_at": now}
+                )
+                updated.append((record_id, record.tool_call_id or ""))
+
+    for record_id, tool_call_id in updated:
+        signal_approval_event(record_id, approved=True, note=None)
+        logger.info(
+            "[Vercel AI] Pre-approved local record %s (tool_call_id=%s) "
+            "for DeferredToolResults continuation in agent %s",
+            record_id,
+            tool_call_id,
+            agent_id,
+        )
 
 
 async def _wrap_streaming_body_with_approvals(
@@ -541,63 +612,27 @@ class VercelAITransport(BaseTransport):
 
         # Create on_complete callback to track usage
         agent_id = self._agent_id
-        tracker = get_usage_tracker()
         import time
 
         request_start = time.perf_counter()
 
         async def on_complete(result: "AgentRunResult") -> None:
             """
-            Callback to track usage after agent run completes.
+            Callback invoked after agent run completes.
+            Usage tracking is handled by LLMContextUsageCapability.
             """
             usage = result.usage()
             input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
             output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-            requests_count = int(getattr(usage, "requests", 0) or 0)
             tool_call_count = int(getattr(usage, "tool_calls", 0) or 0)
 
-            # Extract tool names from result messages
-            tool_names: list[str] = []
-            if hasattr(result, "_messages"):
-                for msg in result._messages:
-                    if hasattr(msg, "tool_calls"):
-                        for tc in msg.tool_calls:
-                            tool_names.append(tc.name)
-
             duration_ms = (time.perf_counter() - request_start) * 1000
-            tracker.update_usage(
-                agent_id=agent_id,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                requests=requests_count,  # Number of requests made
-                tool_calls=tool_call_count,
-                tool_names=tool_names if tool_names else None,
-                duration_ms=duration_ms,
-            )
-
-            # Also update message token tracking
-            stats = tracker.get_agent_stats(agent_id)
-            if stats:
-                stats.update_message_tokens(
-                    user_tokens=input_tokens,
-                    assistant_tokens=output_tokens,
-                )
-                # Persist message history for refresh/history endpoint support.
-                try:
-                    stats.store_messages(result.all_messages())
-                except Exception as e:
-                    logger.warning(
-                        "[Vercel AI] Could not store message history for agent '%s': %s",
-                        agent_id,
-                        e,
-                    )
 
             logger.info(
-                "[Vercel AI] on_complete usage tracked: agent_id=%s input_tokens=%s output_tokens=%s requests=%s tool_calls=%s",
+                "[Vercel AI] on_complete: agent_id=%s input_tokens=%s output_tokens=%s tool_calls=%s",
                 agent_id,
                 input_tokens,
                 output_tokens,
-                requests_count,
                 tool_call_count,
             )
 
@@ -685,6 +720,38 @@ class VercelAITransport(BaseTransport):
             async with IdentityContextManager(identities_from_request):
                 # Get runtime toolsets from the adapter (includes MCP servers)
                 runtime_toolsets = self._get_runtime_toolsets()
+
+                # Filter MCP toolsets to only expose tools the user has enabled.
+                # We check if each tool's name is in the known MCP tool inventory;
+                # if it is, it must also be in the per-agent enabled set.  Tools
+                # that are not MCP tools (e.g. skill tools, frontend tools) are
+                # always passed through.
+                known_mcp_tool_names = get_known_mcp_tool_names()
+                if known_mcp_tool_names:
+                    enabled_mcp_tool_names = get_agent_enabled_mcp_tool_names(agent_id)
+
+                    def _make_mcp_filter(
+                        enabled: set[str], known: set[str]
+                    ) -> Callable[[Any, ToolDefinition], bool]:
+                        def _filter(_ctx: Any, tool_def: ToolDefinition) -> bool:
+                            return (
+                                tool_def.name not in known or tool_def.name in enabled
+                            )
+
+                        return _filter
+
+                    mcp_filter = _make_mcp_filter(
+                        enabled_mcp_tool_names, known_mcp_tool_names
+                    )
+                    runtime_toolsets = [
+                        FilteredToolset(wrapped=ts, filter_func=mcp_filter)
+                        for ts in runtime_toolsets
+                    ]
+                    logger.debug(
+                        "[Vercel AI] Filtering MCP tools: %d enabled out of %d known",
+                        len(enabled_mcp_tool_names),
+                        len(known_mcp_tool_names),
+                    )
 
                 # Add frontend tools as an ExternalToolset if provided in the request
                 has_frontend_tools = False
@@ -788,9 +855,13 @@ class VercelAITransport(BaseTransport):
                 if "usage_limits" in dispatch_params:
                     dispatch_kwargs["usage_limits"] = self._usage_limits
 
-                # Enable DeferredToolRequests when this request includes
-                # frontend tools as an ExternalToolset, OR when the agent has
-                # runtime tools that require human approval before execution.
+                # Enable DeferredToolRequests for either:
+                # 1) frontend tools (client-side tool execution), or
+                # 2) approval-capable agents (approval-responded continuations).
+                #
+                # Without DeferredToolRequests on continuation turns, an
+                # approval-responded part can be treated as a fresh tool call,
+                # causing the same approval to be requested again.
                 if has_frontend_tools or self._has_approval_tools:
                     dispatch_kwargs["output_type"] = [str, DeferredToolRequests]
                     logger.info(
@@ -804,6 +875,14 @@ class VercelAITransport(BaseTransport):
                 if sdk_version and "sdk_version" in dispatch_params:
                     dispatch_kwargs["sdk_version"] = sdk_version
 
+                # Before the continuation run, pre-approve any pending local
+                # approval records for tools approved via ai-agents WebSocket.
+                # In server mode the approval decision updates ai-agents' store
+                # but never signals the local asyncio.Event that
+                # ToolApprovalCapability.before_tool_execute waits on.
+                if self._has_approval_tools and body:
+                    await _presignal_deferred_approvals(body, agent_id)
+
                 response = await VercelAIAdapter.dispatch_request(
                     **dispatch_kwargs,
                 )
@@ -812,24 +891,20 @@ class VercelAITransport(BaseTransport):
                 )
 
                 # Wrap the streaming response body to catch errors during streaming
+                # AND to create local approval records for any tool-approval-request
+                # events pydantic-ai emits (so WS approve/reject can resolve them).
                 if isinstance(response, StreamingResponse):
                     original_body = response.body_iterator
-                    if self._approval_tool_ids:
-                        response.body_iterator = _wrap_streaming_body_with_approvals(
-                            original_body,
-                            self._approval_tool_ids,
-                            self._agent_id,
-                            metric_user_jwt_token,
-                            os.environ.get("POD_NAME"),
-                        )
-                        logger.debug(
-                            "[Vercel AI] Wrapped StreamingResponse with approval-record creation"
-                        )
-                    else:
-                        response.body_iterator = _wrap_streaming_body(original_body)
-                        logger.debug(
-                            "[Vercel AI] Wrapped StreamingResponse body_iterator for error logging"
-                        )
+                    response.body_iterator = _wrap_streaming_body_with_approvals(
+                        original_body,
+                        approval_tool_ids=self._approval_tool_ids,
+                        agent_id=agent_id,
+                        user_jwt_token=metric_user_jwt_token,
+                        pod_name=None,
+                    )
+                    logger.debug(
+                        "[Vercel AI] Wrapped StreamingResponse body_iterator with approvals"
+                    )
 
         except Exception as e:
             logger.error(

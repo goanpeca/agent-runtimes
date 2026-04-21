@@ -45,7 +45,13 @@ export function useSkills(
       has_scripts: s.has_scripts,
       has_resources: s.has_resources,
       status: parseSkillStatus(s.status),
+      approved: s.approved !== false,
       skill_definition: s.skill_definition ?? null,
+      source_variant: s.source_variant,
+      module: s.module,
+      package: s.package,
+      method: s.method,
+      path: s.path,
     }));
     return { skills, total: skills.length };
   }, [codemodeStatus]);
@@ -88,7 +94,31 @@ export function useSkillActions() {
     return ok;
   }, []);
 
-  return { enableSkill, disableSkill };
+  const approveSkill = useCallback((skillId: string) => {
+    const ok = agentRuntimeStore
+      .getState()
+      .sendRawMessage({ type: 'skill_approve', skillId });
+    if (!ok) {
+      console.warn(
+        '[useSkillActions] skill_approve dropped: websocket not ready',
+      );
+    }
+    return ok;
+  }, []);
+
+  const unapproveSkill = useCallback((skillId: string) => {
+    const ok = agentRuntimeStore
+      .getState()
+      .sendRawMessage({ type: 'skill_unapprove', skillId });
+    if (!ok) {
+      console.warn(
+        '[useSkillActions] skill_unapprove dropped: websocket not ready',
+      );
+    }
+    return ok;
+  }, []);
+
+  return { enableSkill, disableSkill, approveSkill, unapproveSkill };
 }
 
 // ---------------------------------------------------------------------------

@@ -25,8 +25,16 @@ export interface SkillInfo {
   has_resources?: boolean;
   /** Lifecycle status from the server-side skills area */
   status?: SkillStatus;
+  /** Whether the skill is approved (defaults to true when omitted) */
+  approved?: boolean;
   /** Raw SKILL.md content (populated once status is 'loaded') */
   skill_definition?: string | null;
+  /** Discovery/source variant for this skill */
+  source_variant?: 'module' | 'package' | 'path' | 'unknown';
+  module?: string;
+  package?: string;
+  method?: string;
+  path?: string;
 }
 
 /**
