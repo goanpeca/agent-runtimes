@@ -49,6 +49,10 @@ async def _decide_approval_via_ws(
     )
 
 
+async def _delete_approval_via_ws(approval_id: str) -> ToolApprovalRecord:
+    return await _delete_approval(approval_id)
+
+
 class ToolApprovalCreateRequest(BaseModel):
     """Payload to create a pending tool approval request."""
 
@@ -179,7 +183,12 @@ async def get_local_approval_status(approval_id: str) -> str | None:
 async def update_local_approval_status(
     approval_id: str, status: str, note: str | None = None
 ) -> None:
-    """Update the status of a local approval record."""
+    """Update the status of a local approval record and unblock any waiter.
+
+    Called by the remote-bridge after it mirrors a decision from the
+    datalayer-ai-agents backend.  Must signal the asyncio.Event so that
+    ``ToolApprovalManager.request_and_wait`` is unblocked.
+    """
     async with _APPROVALS_LOCK:
         record = _APPROVALS.get(approval_id)
         if record and record.status == "pending":
@@ -190,6 +199,8 @@ async def update_local_approval_status(
         else:
             updated = None
     if updated is not None:
+        # Unblock any in-process coroutine waiting on this approval.
+        signal_approval_event(approval_id, status == "approved", note)
         await _publish_approval_event(
             event_type=(
                 "tool_approval_approved"
@@ -199,6 +210,76 @@ async def update_local_approval_status(
             payload=updated.model_dump(),
             agent_id=updated.agent_id or None,
         )
+
+
+async def forward_approval_to_ai_agents(
+    record: "ToolApprovalRecord",
+    user_jwt_token: str | None,
+) -> str | None:
+    """Best-effort forward a pending approval to the datalayer-ai-agents backend.
+
+    Called from ``ToolApprovalManager.request_and_wait`` so that approvals
+    created via the inline ``ToolApprovalCapability`` path are visible in
+    remote UI panels (e.g. the ToolApprovals view in datalayer/ui) that poll
+    the ai-agents service rather than the local agent-runtimes endpoints.
+    """
+    if not user_jwt_token:
+        return None
+    try:
+        import httpx
+        from datalayer_core.utils.urls import DatalayerURLs
+
+        urls = DatalayerURLs.from_environment()
+        ai_agents_url = getattr(urls, "ai_agents_url", None)
+        if not ai_agents_url:
+            return None
+        ai_agents_url = ai_agents_url.rstrip("/")
+        remote_approval_id: str | None = None
+        async with httpx.AsyncClient(
+            timeout=10.0,
+            headers={"Authorization": f"Bearer {user_jwt_token}"},
+        ) as client:
+            resp = await client.post(
+                f"{ai_agents_url}/api/ai-agents/v1/tool-approvals",
+                json={
+                    "agent_id": record.agent_id,
+                    "pod_name": record.pod_name or "",
+                    "tool_name": record.tool_name,
+                    "tool_args": record.tool_args or {},
+                    "tool_call_id": record.tool_call_id,
+                },
+            )
+            resp.raise_for_status()
+            try:
+                payload = resp.json()
+            except Exception:
+                payload = None
+
+            if isinstance(payload, dict):
+                # ai-agents may return either top-level id/uid or nested data object.
+                candidate = (
+                    payload.get("id")
+                    or payload.get("uid")
+                    or (payload.get("data") or {}).get("id")
+                    or (payload.get("data") or {}).get("uid")
+                )
+                if isinstance(candidate, str) and candidate:
+                    remote_approval_id = candidate
+        logger.info(
+            "[tool-approval:forward] Synced approval %s (tool=%s) to ai-agents backend"
+            " (remote_id=%s)",
+            record.id,
+            record.tool_name,
+            remote_approval_id,
+        )
+        return remote_approval_id
+    except Exception as exc:
+        logger.debug(
+            "[tool-approval:forward] Could not sync approval %s to ai-agents: %s",
+            getattr(record, "id", "?"),
+            exc,
+        )
+        return None
 
 
 async def _create_approval(body: ToolApprovalCreateRequest) -> ToolApprovalRecord:
@@ -294,6 +375,28 @@ async def _update_approval(
     return updated
 
 
+async def _delete_approval(approval_id: str) -> ToolApprovalRecord:
+    async with _APPROVALS_LOCK:
+        record = _APPROVALS.get(approval_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Tool approval not found")
+
+        updated = record.model_copy(
+            update={
+                "status": "deleted",
+                "updated_at": _now_iso(),
+            }
+        )
+        _APPROVALS[approval_id] = updated
+
+    await _publish_approval_event(
+        event_type="tool_approval_deleted",
+        payload=updated.model_dump(),
+        agent_id=updated.agent_id or None,
+    )
+    return updated
+
+
 # Public REST endpoints are intentionally removed. Tool-approval state is
 # propagated and consumed over websocket streams only.
 
@@ -311,6 +414,7 @@ async def tool_approvals_ws(
         agent_id,
         list_approvals=_list_approvals,
         decide_approval=_decide_approval_via_ws,
+        delete_approval=_delete_approval_via_ws,
     )
 
 
@@ -324,6 +428,7 @@ async def legacy_tool_approvals_ws(
         agent_id,
         list_approvals=_list_approvals,
         decide_approval=_decide_approval_via_ws,
+        delete_approval=_delete_approval_via_ws,
     )
 
 
@@ -337,4 +442,5 @@ async def ai_agents_stream_ws(
         agent_id,
         list_approvals=_list_approvals,
         decide_approval=_decide_approval_via_ws,
+        delete_approval=_delete_approval_via_ws,
     )

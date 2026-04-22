@@ -234,18 +234,21 @@ function useApprovalsSocket(): {
       const type = (msg.type ?? msg.event) as string | undefined;
       if (!type) return;
 
-      if (type === 'agent.snapshot') {
-        const payload = msg.payload as { approvals?: unknown[] } | undefined;
-        const rawList = Array.isArray(payload?.approvals)
-          ? payload!.approvals
-          : [];
+      // Response to our { type: 'tool-approvals-history' } request.
+      // Shape: { type: "tool-approvals-history", data: { approvals: [...] } }
+      if (type === 'tool-approvals-history') {
+        const data = msg.data as Record<string, unknown> | undefined;
+        const rawList = Array.isArray(data?.approvals) ? data!.approvals : [];
         const list = rawList
           .map(normalizeApproval)
-          .filter((a): a is ApprovalRecord => a !== null);
+          .filter((a): a is ApprovalRecord => a !== null)
+          .filter(a => a.status !== 'deleted');
         writeSnapshot(queryClient, list);
         return;
       }
 
+      // Incremental broadcast events from datalayer-ai-agents.
+      // Shape: { channel: "user:<uid>", event: "tool_approval_*", data: record }
       if (type.startsWith('tool_approval_')) {
         const rawPayload =
           (msg.payload as Record<string, unknown> | undefined) ??
@@ -262,16 +265,16 @@ function useApprovalsSocket(): {
     },
   });
 
-  // Ask for a snapshot as soon as the socket is connected so consumers that
-  // mount after the initial server push still render live data.
-  const snapshotAskedRef = useRef(false);
+  // Request the full approval history once connected so the sidebar badge
+  // and any pending-count consumers always show the correct count.
+  const historyAskedRef = useRef(false);
   useEffect(() => {
     if (connectionState !== 'connected') {
-      snapshotAskedRef.current = false;
+      historyAskedRef.current = false;
       return;
     }
-    if (snapshotAskedRef.current) return;
-    snapshotAskedRef.current = send({ type: 'request_snapshot' });
+    if (historyAskedRef.current) return;
+    historyAskedRef.current = send({ type: 'tool-approvals-history' });
   }, [connectionState, send]);
 
   return { send, connectionState };
@@ -429,41 +432,34 @@ export function useMarkToolApprovalUnread(): MutationResult {
 }
 
 /**
- * Delete a tool approval from the local view.
+ * Delete a tool approval.
  *
- * There is no WS `tool_approval_delete` action today; this removes the
- * approval from the React Query cache only. The deletion survives until
- * the next snapshot replaces the list.
+ * Sends a ``tool_approval_delete`` message over the shared websocket.
+ * The local cache is updated only after the server emits
+ * ``tool_approval_deleted``.
  */
 export function useDeleteToolApproval(): MutationResult {
-  const queryClient = useQueryClient();
+  const { send } = useApprovalsSocket();
   const [isPending, setIsPending] = useState(false);
 
   const mutateAsync = useCallback(
     async ({ id }: { id: string; note?: string }) => {
       setIsPending(true);
       try {
-        const queries = queryClient
-          .getQueryCache()
-          .findAll({ queryKey: APPROVALS_ROOT_KEY });
-        for (const q of queries) {
-          const [, second] = q.queryKey as readonly unknown[];
-          if (second === 'pending-count') continue;
-          const current = queryClient.getQueryData<ApprovalsQueryData>(
-            q.queryKey,
+        const ok = send({
+          type: 'tool_approval_delete',
+          approvalId: id,
+        });
+        if (!ok) {
+          throw new Error(
+            'Approvals WebSocket is not connected; delete was not sent',
           );
-          if (!current?.approvals) continue;
-          const next = removeApproval(current.approvals, id);
-          queryClient.setQueryData<ApprovalsQueryData>(q.queryKey, {
-            approvals: next,
-            total: next.length,
-          });
         }
       } finally {
         setIsPending(false);
       }
     },
-    [queryClient],
+    [send],
   );
 
   const mutate = useCallback(

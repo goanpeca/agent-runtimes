@@ -1725,6 +1725,14 @@ async def create_agent(
                     approval_config = ToolApprovalConfig.from_env()
                     approval_config.agent_id = agent_id
                     approval_config.tools_requiring_approval = approval_patterns
+                    # Override/supplement env-var token with the per-request Bearer
+                    # token so the approval manager can authenticate against the
+                    # datalayer-ai-agents backend when forwarding pending approvals.
+                    _auth_hdr = http_request.headers.get("Authorization", "")
+                    if _auth_hdr.lower().startswith("bearer "):
+                        _request_jwt = _auth_hdr[7:].strip()
+                        if _request_jwt:
+                            approval_config.user_jwt_token = _request_jwt
                     if capabilities is None:
                         capabilities = []
                     capabilities.append(ToolApprovalCapability(config=approval_config))
@@ -3731,6 +3739,32 @@ async def configure_from_spec_endpoint(
     When ``jupyter_sandbox`` / ``mcp_proxy_url`` are provided the
     sandbox is configured in the same request, removing the need for
     a separate ``mcp-servers/start`` call from the companion.
+
+    Tool Approval Flow (k8s)
+    -----------------------
+    The companion injects the user JWT via ``body.user_token``.  This
+    endpoint stores it in ``DATALAYER_USER_TOKEN`` *before* calling
+    ``create_agent``.  Inside ``create_agent``:
+
+    1. ``spec.tools`` is forwarded to ``CreateAgentRequest.tools``.
+    2. ``tools_requiring_approval_ids(tool_ids)`` detects tools whose
+       ToolSpec has ``requires_approval=True`` or ``approval='manual'``.
+    3. When approval tools are found, a ``ToolApprovalCapability`` is
+       auto-added; ``ToolApprovalConfig.from_env()`` reads
+       ``DATALAYER_USER_TOKEN`` to populate ``user_jwt_token``.
+    4. On first tool call ``request_and_wait()``:
+       a. Creates a local approval record and forwards it to the
+          datalayer-ai-agents backend (POST /api/ai-agents/v1/tool-approvals)
+          using ``user_jwt_token`` — making the request visible in the SaaS UI.
+       b. Starts a bridge coroutine that connects to the ai-agents WebSocket
+          and waits for a ``tool_approval_approved/rejected`` broadcast.
+    5. When the user approves/rejects in the SaaS UI the decision is sent
+       as a ``tool_approval_decision`` WS message to ai-agents, which
+       broadcasts ``tool_approval_approved/rejected``.
+    6. The bridge receives the broadcast, calls
+       ``update_local_approval_status()``, which signals the asyncio.Event
+       that unblocks ``request_and_wait()`` — resuming or rejecting the
+       tool call.
     """
     logger.info("Configuring agent from spec: %s", body.agent_spec_id)
 
@@ -3745,8 +3779,11 @@ async def configure_from_spec_endpoint(
             )
             os.environ[name] = value
 
-    # Store the user JWT so that ToolApprovalConfig can authenticate
-    # to the ai-agents service and set the correct requester_uid.
+    # Store the user JWT so that ToolApprovalConfig.from_env() can later
+    # populate user_jwt_token — used by ToolApprovalCapability to:
+    #   • forward pending approval records to the ai-agents backend
+    #   • authenticate the bridge WS connection that mirrors remote decisions
+    # Must be set before create_agent() is called (step 4 below).
     if body.user_token:
         os.environ["DATALAYER_USER_TOKEN"] = body.user_token
 
@@ -3790,6 +3827,12 @@ async def configure_from_spec_endpoint(
         agent_spec=body.agent_spec,
         enable_codemode=server_codemode,
         jupyter_sandbox=body.jupyter_sandbox,
+        # Forward spec tools so create_agent can identify tools that require
+        # manual approval (requires_approval=True / approval='manual' in
+        # ToolSpec) and auto-add ToolApprovalCapability.  Without this field
+        # tool_ids would be empty, no approval capability would be registered,
+        # and tools would execute without waiting for human sign-off.
+        tools=list(spec.tools or []),
     )
     # Serialise to a dict for comparison (env_vars are excluded since
     # they don't affect agent identity — only secrets/keys).

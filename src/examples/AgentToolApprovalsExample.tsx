@@ -15,21 +15,15 @@ import React, {
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Box } from '@datalayer/primer-addons';
 import { ErrorView } from './components';
-import {
-  Button,
-  Heading,
-  SegmentedControl,
-  Spinner,
-  Text,
-} from '@primer/react';
+import { Button, Spinner, Text } from '@primer/react';
+import { useCoreStore } from '@datalayer/core';
+import { DEFAULT_SERVICE_URLS } from '@datalayer/core/lib/api/constants';
 import {
   CheckCircleIcon,
   SignOutIcon,
   ToolsIcon,
   XCircleIcon,
 } from '@primer/octicons-react';
-import { useCoreStore } from '@datalayer/core';
-import { DEFAULT_SERVICE_URLS } from '@datalayer/core/lib/api/constants';
 import { useSimpleAuthStore } from '@datalayer/core/lib/views/otel';
 import { SignInSimple } from '@datalayer/core/lib/views/iam';
 import { UserBadge } from '@datalayer/core/lib/views/profile';
@@ -47,8 +41,6 @@ import {
 const normalizeToolName = (value: string): string =>
   value.replace(/[-_]/g, '').toLowerCase();
 
-const AI_AGENTS_API_PREFIX = '/api/ai-agents/v1';
-
 const stableStringify = (value: unknown): string => {
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value);
@@ -63,6 +55,16 @@ const stableStringify = (value: unknown): string => {
         `${JSON.stringify(key)}:${stableStringify(itemValue)}`,
     );
   return `{${entries.join(',')}}`;
+};
+
+const AI_AGENTS_API_PREFIX = '/api/ai-agents/v1';
+
+const normalizeAiAgentsBaseUrl = (rawBaseUrl: string): string => {
+  const trimmed = rawBaseUrl.replace(/\/$/, '');
+  if (trimmed.endsWith(AI_AGENTS_API_PREFIX)) {
+    return trimmed.slice(0, -AI_AGENTS_API_PREFIX.length);
+  }
+  return trimmed;
 };
 
 const toWsUrl = (
@@ -83,14 +85,6 @@ const toWsUrl = (
   } catch {
     return null;
   }
-};
-
-const normalizeAiAgentsBaseUrl = (rawBaseUrl: string): string => {
-  const trimmed = rawBaseUrl.replace(/\/$/, '');
-  if (trimmed.endsWith(AI_AGENTS_API_PREFIX)) {
-    return trimmed.slice(0, -AI_AGENTS_API_PREFIX.length);
-  }
-  return trimmed;
 };
 
 const queryClient = new QueryClient();
@@ -139,8 +133,6 @@ const buildAgentNameForSpec = (specId: string): string => {
   return uniqueAgentId(base);
 };
 
-type ApprovalMode = 'local' | 'server';
-
 interface ToolApprovalRequest {
   id: string;
   tool_name: string;
@@ -187,7 +179,6 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
     [selectedSpecId],
   );
 
-  const [mode, setMode] = useState<ApprovalMode>('local');
   const [runtimeStatus, setRuntimeStatus] = useState<
     'launching' | 'ready' | 'error'
   >('launching');
@@ -221,7 +212,6 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
     >
   >(new Map());
   const respondedToolCallsRef = useRef<Set<string>>(new Set());
-  const approvalsRef = useRef<ToolApprovalRequest[]>([]);
   const pendingWithoutApprovalRef = useRef<Set<string>>(new Set());
   const pendingSnapshotRequestedRef = useRef<Set<string>>(new Set());
   const queuedResultBackedApprovalsRef = useRef<Set<string>>(new Set());
@@ -254,7 +244,7 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       return;
     }
-    ws.send(JSON.stringify({ type: 'request_snapshot' }));
+    ws.send(JSON.stringify({ type: 'tool-approvals-history' }));
     console.info('[AgentToolApprovalsExample] Requested approval snapshot', {
       reason,
     });
@@ -360,10 +350,6 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
   );
 
   useEffect(() => {
-    approvalsRef.current = approvals;
-  }, [approvals]);
-
-  useEffect(() => {
     if (!approvalActionBanner) {
       return;
     }
@@ -374,52 +360,6 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
     }, 4000);
     return () => window.clearTimeout(timeoutId);
   }, [approvalActionBanner]);
-
-  const scheduleLocalDecisionFallback = useCallback(
-    (
-      requestId: string,
-      approved: boolean,
-      note?: string,
-      source: 'inline' | 'banner' = 'banner',
-    ) => {
-      const approval = approvalsRef.current.find(item => item.id === requestId);
-      if (!approval) {
-        return;
-      }
-
-      window.setTimeout(() => {
-        // If a server event already applied the decision, skip local fallback.
-        const knownToolCallId = approval.tool_call_id;
-        if (
-          knownToolCallId &&
-          respondedToolCallsRef.current.has(knownToolCallId)
-        ) {
-          return;
-        }
-
-        const applied = emitServerToolDecision(
-          approval.tool_call_id,
-          approval.tool_name,
-          approval.tool_args ?? {},
-          approved,
-          approval.id,
-          note,
-        );
-
-        if (applied) {
-          console.info(
-            '[AgentToolApprovalsExample] Applied local decision fallback',
-            {
-              requestId,
-              source,
-              approved,
-            },
-          );
-        }
-      }, 300);
-    },
-    [emitServerToolDecision],
-  );
 
   const toApprovalRequest = useCallback(
     (payload: AgentStreamToolApprovalPayload): ToolApprovalRequest => {
@@ -478,11 +418,9 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
       ) {
         return true;
       }
-      // Server mode can stream agent identifiers that do not match the local
-      // runtime id format, so do not drop pending approvals in that mode.
-      return mode === 'server';
+      return false;
     },
-    [agentId, mode],
+    [agentId],
   );
 
   const enqueueResultBackedApproval = useCallback(
@@ -588,7 +526,7 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
 
   useEffect(() => {
     setApprovals([]);
-  }, [agentId, mode]);
+  }, [agentId]);
 
   useEffect(() => {
     if (!isReady) {
@@ -596,13 +534,11 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
       return;
     }
 
-    const wsSourceBaseUrl = mode === 'server' ? aiAgentsBaseUrl : agentBaseUrl;
-    const wsPath =
-      mode === 'server'
-        ? `${AI_AGENTS_API_PREFIX}/ws`
-        : '/api/v1/tool-approvals/ws';
-
-    const wsUrl = toWsUrl(wsSourceBaseUrl, wsPath, chatAuthToken);
+    const wsUrl = toWsUrl(
+      aiAgentsBaseUrl,
+      `${AI_AGENTS_API_PREFIX}/ws`,
+      chatAuthToken,
+    );
     if (!wsUrl) {
       setWsState('closed');
       return;
@@ -615,11 +551,32 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
 
     ws.onopen = () => {
       setWsState('connected');
+      ws.send(JSON.stringify({ type: 'tool-approvals-history' }));
     };
 
     ws.onmessage = event => {
       try {
-        const stream = parseAgentStreamMessage(JSON.parse(String(event.data)));
+        const raw = JSON.parse(String(event.data));
+
+        if (
+          raw &&
+          typeof raw === 'object' &&
+          (raw as Record<string, unknown>).type === 'tool-approvals-history'
+        ) {
+          const data = (raw as { data?: { approvals?: unknown[] } }).data;
+          const list = Array.isArray(data?.approvals)
+            ? data.approvals
+                .map(item =>
+                  toApprovalRequest(item as AgentStreamToolApprovalPayload),
+                )
+                .filter(approval => isApprovalForActiveAgent(approval))
+            : [];
+          pendingSnapshotRequestedRef.current.clear();
+          setApprovals(list);
+          return;
+        }
+
+        const stream = parseAgentStreamMessage(raw);
         if (!stream) {
           return;
         }
@@ -713,7 +670,6 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
     };
   }, [
     isReady,
-    mode,
     aiAgentsBaseUrl,
     agentBaseUrl,
     chatAuthToken,
@@ -727,15 +683,10 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
     async (
       requestId: string,
       note?: string,
-      source: 'inline' | 'banner' = 'banner',
+      _source: 'inline' | 'banner' = 'banner',
     ): Promise<boolean> => {
       setApprovalLoading(requestId);
       setApprovalError(null);
-      setApprovals(prev =>
-        prev.map(item =>
-          item.id === requestId ? { ...item, status: 'approved' } : item,
-        ),
-      );
       try {
         const ws = approvalWsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -749,7 +700,6 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
           ...(note ? { note } : {}),
         };
         ws.send(JSON.stringify(decision));
-        scheduleLocalDecisionFallback(requestId, true, note, source);
         return true;
       } catch (error) {
         const message =
@@ -762,22 +712,17 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
         setApprovalLoading(null);
       }
     },
-    [scheduleLocalDecisionFallback],
+    [],
   );
 
   const reject = useCallback(
     async (
       requestId: string,
       note?: string,
-      source: 'inline' | 'banner' = 'banner',
+      _source: 'inline' | 'banner' = 'banner',
     ): Promise<boolean> => {
       setApprovalLoading(requestId);
       setApprovalError(null);
-      setApprovals(prev =>
-        prev.map(item =>
-          item.id === requestId ? { ...item, status: 'rejected' } : item,
-        ),
-      );
       try {
         const ws = approvalWsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -791,7 +736,6 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
           ...(note ? { note } : {}),
         };
         ws.send(JSON.stringify(decision));
-        scheduleLocalDecisionFallback(requestId, false, note, source);
         return true;
       } catch (error) {
         const message =
@@ -804,7 +748,7 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
         setApprovalLoading(null);
       }
     },
-    [scheduleLocalDecisionFallback],
+    [],
   );
 
   const pendingApprovals: PendingApproval[] = useMemo(
@@ -1053,90 +997,6 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
     return <ErrorView error={hookError} onLogout={onLogout} />;
   }
 
-  const serverPanel =
-    mode === 'server' ? (
-      <Box
-        sx={{
-          width: 320,
-          minWidth: 280,
-          borderLeft: '1px solid',
-          borderColor: 'border.default',
-          display: 'flex',
-          flexDirection: 'column',
-          minHeight: 0,
-          bg: 'canvas.subtle',
-        }}
-      >
-        <Box
-          sx={{
-            p: 2,
-            borderBottom: '1px solid',
-            borderColor: 'border.default',
-          }}
-        >
-          <Heading as="h4" sx={{ fontSize: 1, mb: 1 }}>
-            Server Approval Queue
-          </Heading>
-          <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
-            WebSocket: {wsState} • Pending: {approvals.length}
-          </Text>
-        </Box>
-        <Box sx={{ p: 2, overflow: 'auto', flex: 1 }}>
-          {approvals.length === 0 ? (
-            <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
-              No pending approvals.
-            </Text>
-          ) : (
-            approvals.map(approval => (
-              <Box
-                key={approval.id}
-                sx={{
-                  border: '1px solid',
-                  borderColor: 'border.default',
-                  borderRadius: 2,
-                  p: 2,
-                  mb: 2,
-                  bg: 'canvas.default',
-                }}
-              >
-                <Text sx={{ fontWeight: 600, fontSize: 1 }}>
-                  {approval.tool_name}
-                </Text>
-                <Text sx={{ fontSize: 0, color: 'fg.muted', mb: 2 }}>
-                  Status:{' '}
-                  {(approval.status ?? 'pending') === 'approved'
-                    ? 'Approved'
-                    : (approval.status ?? 'pending') === 'rejected'
-                      ? 'Rejected'
-                      : 'Waiting for approval'}
-                </Text>
-                <Box sx={{ display: 'flex', gap: 1 }}>
-                  <Button
-                    size="small"
-                    variant="primary"
-                    onClick={() => void approve(approval.id)}
-                    disabled={(approval.status ?? 'pending') !== 'pending'}
-                  >
-                    Approve
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="danger"
-                    onClick={() =>
-                      void reject(approval.id, 'Rejected from queue')
-                    }
-                    disabled={(approval.status ?? 'pending') !== 'pending'}
-                  >
-                    Reject
-                  </Button>
-                </Box>
-              </Box>
-            ))
-          )}
-        </Box>
-      </Box>
-    ) : null;
-
   return (
     <Box
       sx={{
@@ -1227,18 +1087,6 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
             historyEndpoint={`${agentBaseUrl}/api/v1/history`}
             headerActions={
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-                <SegmentedControl
-                  aria-label="Approval mode"
-                  size="small"
-                  onChange={index => setMode(index === 0 ? 'local' : 'server')}
-                >
-                  <SegmentedControl.Button selected={mode === 'local'}>
-                    Local
-                  </SegmentedControl.Button>
-                  <SegmentedControl.Button selected={mode === 'server'}>
-                    Server
-                  </SegmentedControl.Button>
-                </SegmentedControl>
                 <Text sx={{ color: 'fg.muted', fontSize: 1 }}>
                   Pending: {pendingApprovals.length}
                 </Text>
@@ -1277,8 +1125,6 @@ const AgentToolApprovalsInner: React.FC<{ onLogout: () => void }> = ({
             onRejectApproval={reject}
           />
         </Box>
-
-        {serverPanel}
       </Box>
     </Box>
   );
@@ -1325,7 +1171,7 @@ const AgentToolApprovalsExample: React.FC = () => {
           onSignIn={handleSignIn}
           onApiKeySignIn={apiKey => handleSignIn(apiKey, 'api-key-user')}
           title="Tool Approval Agent"
-          description="Sign in to test local and server-backed tool approvals."
+          description="Sign in to test runtime-backed tool approvals."
           leadingIcon={<ToolsIcon size={24} />}
         />
       </ThemedProvider>
