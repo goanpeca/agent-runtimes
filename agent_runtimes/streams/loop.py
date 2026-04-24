@@ -21,7 +21,7 @@ from urllib.parse import urlencode
 from fastapi import WebSocket, WebSocketDisconnect
 
 from agent_runtimes.context.costs import get_cost_store
-from agent_runtimes.observability.prompt_turn_metrics import extract_jwt_token
+from agent_runtimes.otel.prompt_turn_metrics import extract_jwt_token
 from agent_runtimes.streams.messages import (
     AgentMonitoringSnapshotPayload,
     AgentStreamMessage,
@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 
 _STREAM_SUBSCRIBERS: dict[str, set[asyncio.Queue[AgentStreamMessage]]] = {}
 _MCP_ENABLED_TOOLS_BY_AGENT: dict[str, dict[str, set[str]]] = {}
-# Tracks explicitly unapproved tools per agent per server (blocklist; default = all approved).
-_MCP_UNAPPROVED_TOOLS_BY_AGENT: dict[str, dict[str, set[str]]] = {}
+# Tracks approved tools per agent per server (allowlist; default = none approved).
+_MCP_APPROVED_TOOLS_BY_AGENT: dict[str, dict[str, set[str]]] = {}
 _SKILLS_BY_AGENT: dict[str, dict[str, dict[str, Any]]] = {}
 
 
@@ -169,17 +169,27 @@ def _get_agent_mcp_approved_tools_by_server(
     """Get approved MCP tools per server for an agent.
 
     The universe of tools for each server is the set of currently *enabled*
-    tools.  By default every enabled tool is approved; the agent-level
-    blocklist in ``_MCP_UNAPPROVED_TOOLS_BY_AGENT`` records any exceptions.
+    tools. By default none are approved until explicitly toggled.
     """
     key = _stream_key(agent_id)
-    unapproved_by_server = _MCP_UNAPPROVED_TOOLS_BY_AGENT.get(key, {})
+    approved_by_server = _MCP_APPROVED_TOOLS_BY_AGENT.get(key, {})
     enabled_by_server = _get_agent_mcp_enabled_tools_by_server(agent_id)
     result: dict[str, list[str]] = {}
     for server_id, enabled_tool_names in enabled_by_server.items():
-        unapproved = unapproved_by_server.get(server_id, set())
-        result[server_id] = sorted(set(enabled_tool_names) - unapproved)
+        approved = approved_by_server.get(server_id, set())
+        result[server_id] = sorted(set(enabled_tool_names) & approved)
     return result
+
+
+def get_agent_approved_mcp_tool_names(agent_id: str | None) -> set[str]:
+    """Return the set of approved MCP tool names for an agent."""
+    by_server = _get_agent_mcp_approved_tools_by_server(agent_id)
+    names: set[str] = set()
+    for tool_names in by_server.values():
+        for tool_name in tool_names:
+            if isinstance(tool_name, str) and tool_name.strip():
+                names.add(tool_name.strip())
+    return names
 
 
 def get_agent_enabled_mcp_tool_names(agent_id: str | None) -> set[str]:
@@ -248,7 +258,7 @@ def _seed_agent_skills(agent_id: str | None) -> None:
                 "has_scripts": bool(skill.get("has_scripts", False)),
                 "has_resources": bool(skill.get("has_resources", False)),
                 "status": "available",
-                "approved": True,
+                "approved": False,
                 "skill_definition": skill.get("skill_definition"),
                 "source_variant": skill.get("source_variant"),
                 "module": skill.get("module"),
@@ -280,6 +290,17 @@ def get_agent_enabled_skill_ids(agent_id: str | None) -> set[str]:
     return enabled
 
 
+def get_agent_tracked_skill_ids(agent_id: str | None) -> set[str]:
+    """Return all skill IDs tracked for an agent (available + enabled + loaded).
+
+    These are the skills declared by the agent's spec. The guardrail uses
+    this as the "in-scope" set — anything in it is allowed to run pending
+    user approval; anything outside is rejected as unknown.
+    """
+    _seed_agent_skills(agent_id)
+    return set(_SKILLS_BY_AGENT.get(_stream_key(agent_id), {}).keys())
+
+
 def set_agent_enabled_skills(
     agent_id: str | None,
     skill_refs: list[str],
@@ -302,7 +323,7 @@ def set_agent_enabled_skills(
                 "has_scripts": False,
                 "has_resources": False,
                 "status": "available",
-                "approved": True,
+                "approved": False,
                 "skill_definition": None,
                 "source_variant": "unknown",
                 "module": None,
@@ -311,12 +332,34 @@ def set_agent_enabled_skills(
                 "path": None,
             }
 
-    for skill_id, entry in _SKILLS_BY_AGENT[key].items():
-        entry["status"] = "enabled" if skill_id in enabled_ids else "available"
-        if entry["status"] == "available":
-            entry["skill_definition"] = None
+    # Prune the per-agent snapshot to the skills this agent's spec declares.
+    # This ensures the UI skills dropdown reflects exactly the skills available
+    # to this agent, not the global catalog of all discoverable skills.
+    # Spec-declared skills start as "available" (not enabled) — the user must
+    # explicitly enable each skill from the UI, matching MCP tool behavior.
+    if enabled_ids:
+        _SKILLS_BY_AGENT[key] = {
+            skill_id: entry
+            for skill_id, entry in _SKILLS_BY_AGENT[key].items()
+            if skill_id in enabled_ids
+        }
+        for entry in _SKILLS_BY_AGENT[key].values():
+            entry["status"] = "available"
+    else:
+        # Spec declares no skills: clear the snapshot entirely.
+        _SKILLS_BY_AGENT[key] = {}
 
     return get_agent_skills_snapshot(agent_id)
+
+
+def get_agent_approved_skill_ids(agent_id: str | None) -> set[str]:
+    """Return approved skill IDs for an agent."""
+    _seed_agent_skills(agent_id)
+    approved: set[str] = set()
+    for skill_id, entry in _SKILLS_BY_AGENT.get(_stream_key(agent_id), {}).items():
+        if bool(entry.get("approved", False)):
+            approved.add(skill_id)
+    return approved
 
 
 def enable_agent_skill(agent_id: str | None, skill_ref: str) -> None:
@@ -335,8 +378,8 @@ def enable_agent_skill(agent_id: str | None, skill_ref: str) -> None:
             "tags": [],
             "has_scripts": False,
             "has_resources": False,
-            "status": "available",
-            "approved": True,
+            "status": "enabled",
+            "approved": False,
             "skill_definition": None,
             "source_variant": "unknown",
             "module": None,
@@ -385,7 +428,7 @@ def purge_agent_stream_state(agent_id: str | None) -> None:
     key = _stream_key(agent_id)
     _SKILLS_BY_AGENT.pop(key, None)
     _MCP_ENABLED_TOOLS_BY_AGENT.pop(key, None)
-    _MCP_UNAPPROVED_TOOLS_BY_AGENT.pop(key, None)
+    _MCP_APPROVED_TOOLS_BY_AGENT.pop(key, None)
     _STREAM_SUBSCRIBERS.pop(key, None)
 
 
@@ -405,8 +448,36 @@ def build_codemode_status(agent_id: str | None = None) -> dict[str, Any] | None:
 
         adapters = get_all_agui_adapters()
         codemode_enabled = _codemode_state["enabled"]
+        resolved = False
 
-        if adapters:
+        # 1. Prefer the per-agent pydantic-ai adapter from the acp registry.
+        #    This works for all transports (vercel-ai, ag-ui, acp, ...).
+        if agent_id:
+            try:
+                from agent_runtimes.routes.acp import _agents as _agent_registry
+
+                entry = _agent_registry.get(agent_id)
+                if entry is not None:
+                    adapter_obj = entry[0]
+                    if hasattr(adapter_obj, "codemode_enabled"):
+                        codemode_enabled = adapter_obj.codemode_enabled
+                        resolved = True
+            except Exception:
+                pass
+
+        # 2. Fallback: look up the AG-UI adapter by agent_id.
+        if not resolved and agent_id and adapters and agent_id in adapters:
+            try:
+                agent_adapter = adapters[agent_id].agent
+                if hasattr(agent_adapter, "codemode_enabled"):
+                    codemode_enabled = agent_adapter.codemode_enabled
+                    resolved = True
+            except Exception:
+                pass
+
+        # 3. Last resort: pick the first available AG-UI adapter. Only used
+        #    when no agent_id is provided (legacy behaviour).
+        if not resolved and not agent_id and adapters:
             for _agent_id, agui_transport in adapters.items():
                 try:
                     agent_adapter = agui_transport.agent
@@ -415,7 +486,6 @@ def build_codemode_status(agent_id: str | None = None) -> dict[str, Any] | None:
                         break
                 except Exception:
                     pass
-
         sandbox_status = _get_sandbox_status()
         skills_snapshot = get_agent_skills_snapshot(agent_id)
 
@@ -474,7 +544,7 @@ async def build_monitoring_snapshot_payload(
 
     graph_telemetry: dict[str, Any] | None = None
     if agent_id:
-        from ..capabilities.graph_telemetry import get_graph_telemetry_dict
+        from ..monitoring.graph_telemetry import get_graph_telemetry_dict
 
         graph_telemetry = get_graph_telemetry_dict(agent_id)
 
@@ -641,6 +711,8 @@ async def _handle_mcp_server_tools_set(
         }
     )
     agent_map[server_id] = set(normalized)
+    approved_map = _MCP_APPROVED_TOOLS_BY_AGENT.setdefault(key, {})
+    approved_map[server_id] = approved_map.get(server_id, set()) & set(normalized)
     logger.info(
         "[ws:mcp_server_tools_set] agent_id=%s server_id=%s enabled_count=%d",
         agent_id,
@@ -660,13 +732,13 @@ async def _handle_mcp_server_tool_approve(
 ) -> None:
     """Handle a per-tool approval toggle for a specific MCP server."""
     key = _stream_key(agent_id)
-    server_unapproved = _MCP_UNAPPROVED_TOOLS_BY_AGENT.setdefault(key, {}).setdefault(
+    server_approved = _MCP_APPROVED_TOOLS_BY_AGENT.setdefault(key, {}).setdefault(
         server_id, set()
     )
     if approved:
-        server_unapproved.discard(tool_name)
+        server_approved.add(tool_name)
     else:
-        server_unapproved.add(tool_name)
+        server_approved.discard(tool_name)
     logger.info(
         "[ws:mcp_server_tool_approve] agent_id=%s server_id=%s tool=%s approved=%s",
         agent_id,

@@ -43,7 +43,7 @@ from pydantic_ai.toolsets import ExternalToolset, FilteredToolset
 from ..adapters.base import BaseAgent
 from ..context.identities import IdentityContextManager, set_request_user_jwt
 from ..events import create_event
-from ..observability.prompt_turn_metrics import (
+from ..otel.prompt_turn_metrics import (
     extract_identity_hints,
     extract_jwt_token,
     extract_user_id_from_jwt,
@@ -81,7 +81,7 @@ async def _presignal_deferred_approvals(
     In **server mode** the human-approval decision travels via the ai-agents
     WebSocket and updates ai-agents' store, but never calls
     ``signal_approval_event()`` on the local asyncio.Event that
-    ``ToolApprovalCapability.before_tool_execute`` waits on.  Without this
+    ``ToolsGuardrailCapability.before_tool_execute`` waits on.  Without this
     pre-signal, ``before_tool_execute`` would call ``request_and_wait()`` again
     on the continuation turn and block forever.
 
@@ -98,7 +98,8 @@ async def _presignal_deferred_approvals(
     )
 
     messages: list[Any] = body.get("messages") or []
-    tool_call_ids: list[str] = []
+    tool_call_ids: set[str] = set()
+    approval_ids: set[str] = set()
     for msg in messages:
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
             continue
@@ -113,28 +114,42 @@ async def _presignal_deferred_approvals(
                 and part.get("state") == "approval-responded"
             ):
                 approval_info = part.get("approval") or {}
+                approval_id = approval_info.get("id")
+                if isinstance(approval_id, str) and approval_id:
+                    approval_ids.add(approval_id)
                 if approval_info.get("approved") is True:
                     tool_call_id = part.get("toolCallId")
                     if isinstance(tool_call_id, str) and tool_call_id:
-                        tool_call_ids.append(tool_call_id)
+                        tool_call_ids.add(tool_call_id)
 
-    if not tool_call_ids:
+    if not tool_call_ids and not approval_ids:
         return
 
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    updated: list[tuple[str, str]] = []
+    to_signal: list[tuple[str, str]] = []
     async with _APPROVALS_LOCK:
         for record_id, record in list(_APPROVALS.items()):
-            if record.tool_call_id in tool_call_ids and record.status == "pending":
-                _APPROVALS[record_id] = record.model_copy(
-                    update={"status": "approved", "updated_at": now}
-                )
-                updated.append((record_id, record.tool_call_id or ""))
+            by_id = record_id in approval_ids
+            by_tool_call_id = (
+                bool(record.tool_call_id) and record.tool_call_id in tool_call_ids
+            )
+            if not (by_id or by_tool_call_id):
+                continue
 
-    for record_id, tool_call_id in updated:
+            # Always refresh updated_at so the time-window dedupe check in
+            # before_tool_execute succeeds even when the record was already
+            # approved (e.g. by an earlier WS decision that raced ahead).
+            _APPROVALS[record_id] = record.model_copy(
+                update={"status": "approved", "updated_at": now}
+            )
+            # Always signal matching records so any waiter bound to this
+            # approval_id can resume, even if status was already "approved".
+            to_signal.append((record_id, record.tool_call_id or ""))
+
+    for record_id, tool_call_id in to_signal:
         signal_approval_event(record_id, approved=True, note=None)
         logger.info(
-            "[Vercel AI] Pre-approved local record %s (tool_call_id=%s) "
+            "[Vercel AI] Pre-signaled local record %s (tool_call_id=%s) "
             "for DeferredToolResults continuation in agent %s",
             record_id,
             tool_call_id,
@@ -152,7 +167,7 @@ async def _wrap_streaming_body_with_approvals(
     """Wrap a streaming body to create local approval records for deferred tools.
 
     When DeferredToolRequests is active, pydantic-ai never executes the tool,
-    so ToolApprovalCapability.before_tool_execute never fires.  This wrapper
+    so ToolsGuardrailCapability.before_tool_execute never fires.  This wrapper
     intercepts ``tool-input-available`` SSE events and creates matching
     approval records in the local in-memory store so the frontend can poll
     them and enable the Approve / Deny buttons.
@@ -163,6 +178,8 @@ async def _wrap_streaming_body_with_approvals(
         ToolApprovalCreateRequest,
         _create_approval,
         mirror_approval_to_local,
+        register_approval_credentials,
+        register_remote_approval_mapping,
     )
 
     # Build name variants for matching (underscore / hyphen normalisation).
@@ -179,17 +196,18 @@ async def _wrap_streaming_body_with_approvals(
             approval_names.add(name.replace("_", "-"))
     created_tool_call_ids: set[str] = set()
     remote_created_tool_call_ids: set[str] = set()
+    remote_approval_ids_by_tool_call_id: dict[str, str] = {}
 
     async def create_remote_approval_if_possible(
         *,
         tool_name: str,
         tool_args: dict[str, Any],
         tool_call_id: str,
-    ) -> None:
+    ) -> str | None:
         if not user_jwt_token or not tool_call_id:
-            return
+            return None
         if tool_call_id in remote_created_tool_call_ids:
-            return
+            return remote_approval_ids_by_tool_call_id.get(tool_call_id)
         try:
             from datalayer_core.utils.urls import DatalayerURLs
 
@@ -211,18 +229,36 @@ async def _wrap_streaming_body_with_approvals(
                     },
                 )
                 resp.raise_for_status()
+                payload = resp.json() if resp.content else None
+
+            remote_approval_id: str | None = None
+            if isinstance(payload, dict):
+                candidate = (
+                    payload.get("id")
+                    or payload.get("uid")
+                    or (payload.get("data") or {}).get("id")
+                    or (payload.get("data") or {}).get("uid")
+                )
+                if isinstance(candidate, str) and candidate:
+                    remote_approval_id = candidate
+
             remote_created_tool_call_ids.add(tool_call_id)
+            if remote_approval_id:
+                remote_approval_ids_by_tool_call_id[tool_call_id] = remote_approval_id
             logger.info(
-                "[Vercel AI] Created remote ai-agents approval for tool_call_id=%s tool='%s'",
+                "[Vercel AI] Created remote ai-agents approval for tool_call_id=%s tool='%s' remote_id=%s",
                 tool_call_id,
                 tool_name,
+                remote_approval_id,
             )
+            return remote_approval_id
         except Exception as remote_err:
             logger.debug(
                 "[Vercel AI] Could not create remote ai-agents approval for tool_call_id=%s: %s",
                 tool_call_id,
                 remote_err,
             )
+            return None
 
     try:
         async for chunk in body_iterator:
@@ -274,11 +310,14 @@ async def _wrap_streaming_body_with_approvals(
 
                         # Best-effort remote sync so server-mode panels backed by
                         # ai-agents can display pending approvals.
+                        remote_approval_id: str | None = None
                         if tool_call_id:
-                            await create_remote_approval_if_possible(
-                                tool_name=tool_name,
-                                tool_args=normalized_tool_args,
-                                tool_call_id=tool_call_id,
+                            remote_approval_id = (
+                                await create_remote_approval_if_possible(
+                                    tool_name=tool_name,
+                                    tool_args=normalized_tool_args,
+                                    tool_call_id=tool_call_id,
+                                )
                             )
 
                         # If the stream already provides an approval ID, mirror it
@@ -286,6 +325,10 @@ async def _wrap_streaming_body_with_approvals(
                         approval_id = (
                             event.get("approvalId") or event.get("approval_id") or ""
                         )
+                        if (
+                            not isinstance(approval_id, str) or not approval_id
+                        ) and remote_approval_id:
+                            approval_id = remote_approval_id
                         if isinstance(approval_id, str) and approval_id:
                             record = await mirror_approval_to_local(
                                 {
@@ -305,6 +348,22 @@ async def _wrap_streaming_body_with_approvals(
                                 tool_call_id=tool_call_id or None,
                             )
                             record = await _create_approval(req)
+
+                        # Keep JWT + mapping registrations aligned across all
+                        # approval creation paths so runtime decisions can
+                        # always be relayed and mirrored with ai-agents.
+                        if user_jwt_token:
+                            register_approval_credentials(record.id, user_jwt_token)
+                        if (
+                            remote_approval_id
+                            and user_jwt_token
+                            and remote_approval_id != record.id
+                        ):
+                            register_remote_approval_mapping(
+                                record.id,
+                                remote_approval_id,
+                                user_jwt_token,
+                            )
                         if tool_call_id:
                             created_tool_call_ids.add(tool_call_id)
                         logger.info(
@@ -885,7 +944,7 @@ class VercelAITransport(BaseTransport):
                 # approval records for tools approved via ai-agents WebSocket.
                 # In server mode the approval decision updates ai-agents' store
                 # but never signals the local asyncio.Event that
-                # ToolApprovalCapability.before_tool_execute waits on.
+                # ToolsGuardrailCapability.before_tool_execute waits on.
                 if self._has_approval_tools and body:
                     await _presignal_deferred_approvals(body, agent_id)
 

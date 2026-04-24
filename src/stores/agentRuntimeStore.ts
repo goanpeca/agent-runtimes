@@ -563,15 +563,16 @@ export const agentRuntimeStore = createStore<AgentRuntimeStore>()(
         },
 
         applySnapshot: payload =>
-          set({
-            approvals: payload.approvals ?? [],
-            pendingApprovalCount: payload.pendingApprovalCount ?? 0,
+          set(state => ({
+            // Tool-approval list/count are sourced from ai-agents WS only.
+            approvals: state.approvals,
+            pendingApprovalCount: state.pendingApprovalCount,
             contextSnapshot: payload.contextSnapshot ?? null,
             costUsage: payload.costUsage ?? null,
             mcpStatus: payload.mcpStatus ?? null,
             codemodeStatus: payload.codemodeStatus ?? null,
             fullContext: payload.fullContext ?? null,
-          }),
+          })),
 
         upsertApproval: approval =>
           set(state => {
@@ -868,11 +869,28 @@ export const agentRuntimeStore = createStore<AgentRuntimeStore>()(
 
         // ── Reset ─────────────────────────────────────────────────────
         reset: () => {
+          // Close any live WebSocket so the backend tears down its
+          // per-connection state (subscriptions, approvals, monitoring).
+          if (_ws) {
+            try {
+              _ws.close(1000, 'reset');
+            } catch {
+              // Ignore close errors — socket may already be in a closing
+              // state or the runtime may have been killed.
+            }
+          }
           _ws = null;
           set({ ...initialRuntimeState, ...initialWsState });
         },
 
         resetWs: () => {
+          if (_ws) {
+            try {
+              _ws.close(1000, 'reset');
+            } catch {
+              // Ignore.
+            }
+          }
           _ws = null;
           set(initialWsState);
         },

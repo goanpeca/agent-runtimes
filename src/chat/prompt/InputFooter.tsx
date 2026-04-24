@@ -24,14 +24,13 @@ import { ToolsIcon, BriefcaseIcon, AiModelIcon } from '@primer/octicons-react';
 import { InputPrompt } from './InputPrompt';
 import { TokenUsageBar } from '../usage/TokenUsageBar';
 import { McpStatusIndicator } from '../indicators/McpStatusIndicator';
-import { SandboxStatusIndicator } from '../indicators/SandboxStatusIndicator';
+import { SkillsStatusIndicator } from '../indicators/SkillsStatusIndicator';
 import type {
   BuiltinTool,
   ContextSnapshotData,
   MCPServerConfig,
   McpToolsetsStatusResponse,
   ModelConfig,
-  SandboxWsStatus,
   SkillInfo,
 } from '../../types';
 
@@ -62,6 +61,11 @@ export interface InputToolbarProps {
   showToolsMenu: boolean;
   showSkillsMenu: boolean;
   codemodeEnabled: boolean;
+  /**
+   * Optional callback invoked when the user toggles codemode from the Tools
+   * menu. When omitted the toggle renders as read-only.
+   */
+  onToggleCodemode?: (enabled: boolean) => void | Promise<void>;
   isA2AProtocol: boolean;
   hasConfigData: boolean;
   hasSkillsData: boolean;
@@ -98,16 +102,12 @@ export interface InputToolbarProps {
   onToggleSkillApproval: (skillId: string) => void;
 
   // ---- Indicators ----
-  /** API base URL passed to MCP / Sandbox indicators */
+  /** API base URL passed to MCP indicator */
   apiBase?: string;
-  /** Auth token passed to MCP / Sandbox indicators */
+  /** Auth token passed to MCP indicator */
   authToken?: string;
-  /** Agent ID passed to Sandbox indicator for agent-scoped status */
-  agentId?: string;
   /** Pre-fetched MCP status from WebSocket — bypasses REST polling */
   mcpStatusData?: McpToolsetsStatusResponse | null;
-  /** Optional sandbox status override for immediate indicator updates */
-  sandboxStatusData?: SandboxWsStatus | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +132,7 @@ export function InputToolbar({
   showToolsMenu,
   showSkillsMenu,
   codemodeEnabled,
+  onToggleCodemode,
   isA2AProtocol,
   hasConfigData,
   hasSkillsData,
@@ -155,13 +156,12 @@ export function InputToolbar({
   onToggleSkillApproval,
   apiBase,
   authToken,
-  agentId,
   mcpStatusData,
-  sandboxStatusData,
 }: InputToolbarProps) {
   // Show token usage when we have valid context data
-  const hasContext =
-    agentUsage && !agentUsage.error && agentUsage.totalTokens > 0;
+  const hasContext = Boolean(
+    agentUsage && !agentUsage.error && agentUsage.totalTokens > 0,
+  );
 
   return (
     <Box>
@@ -180,24 +180,23 @@ export function InputToolbar({
         onChange={setInput}
         footerRightContent={
           <>
-            <SandboxStatusIndicator
-              apiBase={apiBase}
-              authToken={authToken}
-              agentId={agentId}
-              statusOverride={sandboxStatusData}
-            />
             <McpStatusIndicator
               apiBase={apiBase}
               authToken={authToken}
               data={mcpStatusData}
+            />
+            <SkillsStatusIndicator
+              skillsCount={skills.length}
+              enabledCount={enabledSkills.size}
+              loading={skillsLoading}
             />
           </>
         }
       />
 
       {/* Token usage bar — between input and selectors */}
-      {showTokenUsage && hasContext && (
-        <TokenUsageBar agentUsage={agentUsage!} padding={padding} />
+      {showTokenUsage && hasContext && agentUsage && (
+        <TokenUsageBar agentUsage={agentUsage} padding={padding} />
       )}
 
       {/* Model, Skills, and Tools Footer — Below Input */}
@@ -219,6 +218,7 @@ export function InputToolbar({
             {showToolsMenu && (
               <ToolsMenu
                 codemodeEnabled={codemodeEnabled}
+                onToggleCodemode={onToggleCodemode}
                 mcpServers={mcpServers}
                 enabledMcpTools={enabledMcpTools}
                 enabledMcpToolCount={enabledMcpToolCount}
@@ -264,6 +264,7 @@ export function InputToolbar({
 
 function ToolsMenu({
   codemodeEnabled,
+  onToggleCodemode,
   mcpServers,
   enabledMcpTools,
   enabledMcpToolCount,
@@ -271,9 +272,10 @@ function ToolsMenu({
   onToggleAllMcpServerTools,
   approvedMcpTools,
   onToggleMcpToolApproval,
-  availableTools,
+  availableTools: _availableTools,
 }: {
   codemodeEnabled: boolean;
+  onToggleCodemode?: (enabled: boolean) => void | Promise<void>;
   mcpServers: MCPServerConfig[];
   enabledMcpTools: Map<string, Set<string>>;
   enabledMcpToolCount: number;
@@ -287,6 +289,8 @@ function ToolsMenu({
   onToggleMcpToolApproval: (serverId: string, toolName: string) => void;
   availableTools: BuiltinTool[];
 }) {
+  const hasUsableMcpServers = mcpServers.some(server => server.isAvailable);
+
   return (
     <ActionMenu>
       <ActionMenu.Anchor>
@@ -305,18 +309,48 @@ function ToolsMenu({
       <ActionMenu.Overlay side="outside-top" align="start" width="large">
         <Box sx={{ maxHeight: '60vh', overflowY: 'auto' }}>
           <ActionList>
-            {codemodeEnabled && (
-              <ActionList.Group title="Codemode">
-                <ActionList.Item disabled>
-                  <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
-                    MCP tools are accessible via Codemode meta-tools
-                    (search_tools, list_tool_names, execute_code).
+            {/* Codemode toggle — always visible at the top */}
+            <ActionList.Group title="Codemode">
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  px: 3,
+                  py: 2,
+                  borderBottom: '1px solid',
+                  borderColor: 'border.muted',
+                  gap: 2,
+                }}
+              >
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Text
+                    id="toggle-codemode"
+                    sx={{ fontWeight: 'semibold', display: 'block' }}
+                  >
+                    Enable Codemode
                   </Text>
-                </ActionList.Item>
-              </ActionList.Group>
-            )}
+                  <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
+                    {codemodeEnabled
+                      ? 'MCP tools accessible via meta-tools (search_tools, execute_code).'
+                      : 'Expose MCP tools directly to the model.'}
+                  </Text>
+                </Box>
+                <ToggleSwitch
+                  size="small"
+                  checked={codemodeEnabled}
+                  disabled={!onToggleCodemode}
+                  onClick={() => {
+                    if (onToggleCodemode) {
+                      void onToggleCodemode(!codemodeEnabled);
+                    }
+                  }}
+                  aria-labelledby="toggle-codemode"
+                />
+              </Box>
+            </ActionList.Group>
             {/* MCP Server Tools */}
-            {mcpServers.length > 0 ? (
+            {mcpServers.length > 0 && hasUsableMcpServers ? (
               mcpServers.map(server => {
                 const serverTools = enabledMcpTools.get(server.id);
                 const allToolNames = server.tools.map(t => t.name);
@@ -370,10 +404,10 @@ function ToolsMenu({
                       server.tools.map(tool => {
                         const isEnabled = serverTools?.has(tool.name) ?? false;
                         const serverApproved = approvedMcpTools.get(server.id);
-                        // When no approved entry for a server, all tools are approved by default.
+                        // Tools default to NOT approved — user must explicitly
+                        // approve each one (matches the Skills approval UX).
                         const isApproved =
-                          serverApproved === undefined ||
-                          serverApproved.has(tool.name);
+                          serverApproved?.has(tool.name) ?? false;
                         return (
                           <Box
                             key={`${server.id}-${tool.name}`}
@@ -485,30 +519,12 @@ function ToolsMenu({
                 );
               })
             ) : (
-              <ActionList.Group title="Available Tools">
-                {availableTools.length > 0 ? (
-                  availableTools.map(tool => (
-                    <ActionList.Item key={tool.id} disabled>
-                      <ActionList.LeadingVisual>
-                        <Box
-                          sx={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: '50%',
-                            backgroundColor: 'success.emphasis',
-                          }}
-                        />
-                      </ActionList.LeadingVisual>
-                      {tool.name}
-                    </ActionList.Item>
-                  ))
-                ) : (
-                  <ActionList.Item disabled>
-                    <Text sx={{ color: 'fg.muted', fontStyle: 'italic' }}>
-                      No tools available
-                    </Text>
-                  </ActionList.Item>
-                )}
+              <ActionList.Group title="No MCP Servers">
+                <ActionList.Item disabled>
+                  <Text sx={{ color: 'fg.muted', fontStyle: 'italic' }}>
+                    No MCP Servers
+                  </Text>
+                </ActionList.Item>
               </ActionList.Group>
             )}
           </ActionList>
@@ -550,7 +566,7 @@ function SkillsMenu({
         >
           <Text sx={{ fontSize: 0 }}>
             Skills
-            {enabledSkills.size > 0 && ` (${enabledSkills.size})`}
+            {skills.length > 0 && ` (${skills.length})`}
           </Text>
         </Button>
       </ActionMenu.Anchor>

@@ -28,8 +28,8 @@ from pydantic_ai import DeferredToolRequests
 
 from ..adapters.pydantic_ai_adapter import PydanticAIAdapter
 from ..capabilities import (
-    ToolApprovalCapability,
     ToolApprovalConfig,
+    ToolsGuardrailCapability,
     build_capabilities_from_agent_spec,
     build_default_choice_guardrails,
     build_usage_limits_from_agent_spec,
@@ -1553,24 +1553,25 @@ async def create_agent(
                 len(get_agent_enabled_skill_ids(agent_id)),
             )
 
-        # Add codemode/sandbox toolset.
-        # - enable_codemode=True  → full toolset: execute_code + MCP discovery tools
-        # - sandbox_variant set only → sandbox-only toolset: execute_code only
-        if request.enable_codemode or request.sandbox_variant:
-            disable_mcp_for_codemode = not request.enable_codemode or (
+        # Add codemode toolset ONLY when codemode is explicitly enabled.
+        # When only ``sandbox_variant`` is set (no codemode), the shared
+        # sandbox still exists for lifecycle/status purposes, but we do NOT
+        # attach any CodemodeToolset — the agent gets zero sandbox-related
+        # tools (no ``execute_code``, no ``list_tool_names``, no
+        # ``search_tools``, no ``get_tool_details``, no ``list_servers``,
+        # no ``call_tool``). The agent must use only the raw MCP tools
+        # exposed by its configured MCP servers.
+        if request.enable_codemode:
+            disable_mcp_for_codemode = (
                 selected_mcp_servers_explicit and len(request.selected_mcp_servers) == 0
             )
-            # Only load MCP servers when codemode discovery is active.
-            if request.enable_codemode:
-                mcp_manager = get_mcp_manager()
-                if not disable_mcp_for_codemode and not mcp_manager.get_servers():
-                    mcp_servers = await initialize_config_mcp_servers(
-                        discover_tools=True
-                    )
-                    mcp_manager.load_servers(mcp_servers)
-                    logger.info(
-                        f"Loaded {len(mcp_servers)} MCP servers for codemode agent {agent_id}"
-                    )
+            mcp_manager = get_mcp_manager()
+            if not disable_mcp_for_codemode and not mcp_manager.get_servers():
+                mcp_servers = await initialize_config_mcp_servers(discover_tools=True)
+                mcp_manager.load_servers(mcp_servers)
+                logger.info(
+                    f"Loaded {len(mcp_servers)} MCP servers for codemode agent {agent_id}"
+                )
             codemode_toolset = _build_codemode_toolset(
                 request,
                 http_request,
@@ -1578,7 +1579,7 @@ async def create_agent(
                 sandbox=shared_sandbox,
                 disable_mcp_servers=disable_mcp_for_codemode,
                 sandbox_variant=effective_variant,
-                enable_discovery_tools=request.enable_codemode,
+                enable_discovery_tools=True,
             )
             if codemode_toolset is not None:
                 await initialize_codemode_toolset(codemode_toolset)
@@ -1718,7 +1719,8 @@ async def create_agent(
                 has_tool_approval_capability = bool(
                     capabilities
                     and any(
-                        isinstance(cap, ToolApprovalCapability) for cap in capabilities
+                        isinstance(cap, ToolsGuardrailCapability)
+                        for cap in capabilities
                     )
                 )
                 if not has_tool_approval_capability:
@@ -1735,10 +1737,12 @@ async def create_agent(
                             approval_config.user_jwt_token = _request_jwt
                     if capabilities is None:
                         capabilities = []
-                    capabilities.append(ToolApprovalCapability(config=approval_config))
+                    capabilities.append(
+                        ToolsGuardrailCapability(config=approval_config)
+                    )
                     agent_kwargs["capabilities"] = capabilities
                     logger.info(
-                        "Auto-enabled ToolApprovalCapability for agent '%s' with approval tools: %s",
+                        "Auto-enabled ToolsGuardrailCapability for agent '%s' with approval tools: %s",
                         agent_id,
                         approval_patterns,
                     )
@@ -2011,6 +2015,13 @@ async def create_agent(
         # full history starting from agent creation time.
         _emit_initial_otel_baseline(agent_id, http_request)
 
+        # Generic MCP startup path for non-codemode agents:
+        # Start MCP servers as a background task. The adapter's
+        # _get_runtime_toolsets() will wait for them to become ready when
+        # the first user prompt arrives (via wait_until_ready).
+        if selected_mcp_servers and not request.enable_codemode:
+            asyncio.create_task(_start_mcp_servers_background(agent_id, http_request))
+
         return CreateAgentResponse(
             id=agent_id,
             name=request.name,
@@ -2032,7 +2043,7 @@ def _emit_initial_otel_baseline(agent_id: str, http_request: Request) -> None:
     This is fire-and-forget — failures are logged but never propagated.
     """
     try:
-        from ..observability.prompt_turn_metrics import (
+        from ..otel.prompt_turn_metrics import (
             decode_user_uid,
             extract_bearer_token,
             record_prompt_turn_completion,
@@ -2859,6 +2870,57 @@ class AgentMcpServersResponse(BaseModel):
         "For jupyter sandboxes they are also injected into the kernel when it is first used.",
     )
     message: str
+
+
+async def _start_mcp_servers_background(
+    agent_id: str,
+    request: Request | None = None,
+) -> None:
+    """
+    Fire-and-forget background task that starts MCP servers for *agent_id*
+    and then broadcasts a monitoring snapshot so the frontend sees the updated
+    MCP status (tools discovered, indicator turns green).
+
+    The adapter's ``_get_runtime_toolsets_async()`` will wait for these servers
+    to become ready via ``MCPLifecycleManager.wait_until_ready()`` before
+    including them in a model run.
+    """
+    try:
+        (
+            started,
+            already_running,
+            failed,
+            _codemode_rebuilt,
+        ) = await _start_mcp_servers_for_agent(agent_id, [], request)
+        logger.info(
+            "Background MCP startup for '%s': started=%s already_running=%s failed=%s",
+            agent_id,
+            started,
+            already_running,
+            failed,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Background MCP startup failed for '%s': %s",
+            agent_id,
+            exc,
+        )
+    finally:
+        # Always broadcast a snapshot so the frontend MCP indicator updates.
+        try:
+            from ..streams.loop import publish_stream_event
+
+            await publish_stream_event(
+                event_type="agent.mcp.ready",
+                payload={"agentId": agent_id},
+                agent_id=agent_id,
+            )
+        except Exception as broadcast_exc:
+            logger.debug(
+                "Could not broadcast MCP-ready snapshot for '%s': %s",
+                agent_id,
+                broadcast_exc,
+            )
 
 
 async def _start_mcp_servers_for_agent(
@@ -3749,7 +3811,7 @@ async def configure_from_spec_endpoint(
     1. ``spec.tools`` is forwarded to ``CreateAgentRequest.tools``.
     2. ``tools_requiring_approval_ids(tool_ids)`` detects tools whose
        ToolSpec has ``requires_approval=True`` or ``approval='manual'``.
-    3. When approval tools are found, a ``ToolApprovalCapability`` is
+    3. When approval tools are found, a ``ToolsGuardrailCapability`` is
        auto-added; ``ToolApprovalConfig.from_env()`` reads
        ``DATALAYER_USER_TOKEN`` to populate ``user_jwt_token``.
     4. On first tool call ``request_and_wait()``:
@@ -3780,7 +3842,7 @@ async def configure_from_spec_endpoint(
             os.environ[name] = value
 
     # Store the user JWT so that ToolApprovalConfig.from_env() can later
-    # populate user_jwt_token — used by ToolApprovalCapability to:
+    # populate user_jwt_token — used by ToolsGuardrailCapability to:
     #   • forward pending approval records to the ai-agents backend
     #   • authenticate the bridge WS connection that mirrors remote decisions
     # Must be set before create_agent() is called (step 4 below).
@@ -3829,7 +3891,7 @@ async def configure_from_spec_endpoint(
         jupyter_sandbox=body.jupyter_sandbox,
         # Forward spec tools so create_agent can identify tools that require
         # manual approval (requires_approval=True / approval='manual' in
-        # ToolSpec) and auto-add ToolApprovalCapability.  Without this field
+        # ToolSpec) and auto-add ToolsGuardrailCapability.  Without this field
         # tool_ids would be empty, no approval capability would be registered,
         # and tools would execute without waiting for human sign-off.
         tools=list(spec.tools or []),

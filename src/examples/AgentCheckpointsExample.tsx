@@ -46,8 +46,6 @@ import {
   SquareIcon,
   HistoryIcon,
   CheckCircleIcon,
-  WorkflowIcon,
-  SignOutIcon,
   XCircleIcon,
   ClockIcon,
   TagIcon,
@@ -62,12 +60,9 @@ import {
   AgentIcon,
 } from '@primer/octicons-react';
 import { Box } from '@datalayer/primer-addons';
-import { ErrorView } from './components';
-import { coreStore } from '@datalayer/core';
+import { AuthRequiredView, ErrorView } from './components';
 import { ThemedProvider } from './utils/themedProvider';
 import { useSimpleAuthStore } from '@datalayer/core/lib/views/otel';
-import { SignInSimple } from '@datalayer/core/lib/views/iam';
-import { UserBadge } from '@datalayer/core/lib/views/profile';
 import { Chat } from '../chat';
 import {
   useAgentRuntimes,
@@ -181,7 +176,6 @@ const SpecRow: React.FC<{
 const AgentCheckpointsInner: React.FC<{ onLogout: () => void }> = ({
   onLogout,
 }) => {
-  const { token } = useSimpleAuthStore();
   const {
     runtime,
     status: runtimeStatus,
@@ -532,16 +526,6 @@ const AgentCheckpointsInner: React.FC<{ onLogout: () => void }> = ({
           </>
         )}
         {actionLoading && <Spinner size="small" />}
-        {token && <UserBadge token={token} variant="small" />}
-        <Button
-          size="small"
-          variant="invisible"
-          onClick={onLogout}
-          leadingVisual={SignOutIcon}
-          sx={{ color: 'fg.muted' }}
-        >
-          Sign out
-        </Button>
       </Box>
 
       {/* Error flash */}
@@ -1121,7 +1105,7 @@ const AgentCheckpointsInner: React.FC<{ onLogout: () => void }> = ({
 // ─── Main component with auth gate ─────────────────────────────────────────
 
 const AgentCheckpointsExample: React.FC = () => {
-  const { token, setAuth, clearAuth } = useSimpleAuthStore();
+  const { token, clearAuth } = useSimpleAuthStore();
   const hasSynced = useRef(false);
 
   // Sync persisted token (from a previous session) to iamStore on mount
@@ -1135,16 +1119,6 @@ const AgentCheckpointsExample: React.FC = () => {
   }, [token]);
 
   // Wrap setAuth to also sync the token to iamStore on sign-in
-  const handleSignIn = useCallback(
-    (newToken: string, handle: string) => {
-      setAuth(newToken, handle);
-      hasSynced.current = true;
-      import('@datalayer/core/lib/state').then(({ iamStore }) => {
-        iamStore.setState({ token: newToken });
-      });
-    },
-    [setAuth],
-  );
 
   // Clear iamStore token on logout
   const handleLogout = useCallback(() => {
@@ -1155,25 +1129,10 @@ const AgentCheckpointsExample: React.FC = () => {
     });
   }, [clearAuth]);
 
-  const loginUrl = useRef(
-    `${
-      coreStore.getState().configuration?.iamRunUrl ||
-      coreStore.getState().configuration?.runUrl ||
-      'https://prod1.datalayer.run'
-    }/api/iam/v1/login`,
-  ).current;
-
   if (!token) {
     return (
       <ThemedProvider>
-        <SignInSimple
-          onSignIn={handleSignIn}
-          onApiKeySignIn={apiKey => handleSignIn(apiKey, 'api-key-user')}
-          loginUrl={loginUrl}
-          title="Agent Checkpointing"
-          description="Sign in to launch and checkpoint durable agents."
-          leadingIcon={<WorkflowIcon size={24} />}
-        />
+        <AuthRequiredView />
       </ThemedProvider>
     );
   }

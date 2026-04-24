@@ -15,7 +15,9 @@ import {
   ToolsIcon,
   ClockIcon,
   GraphIcon,
+  AppsIcon,
   ListUnorderedIcon,
+  DownloadIcon,
 } from '@primer/octicons-react';
 import {
   Heading,
@@ -147,8 +149,11 @@ function formatTokens(tokens: number): string {
  * Format duration
  */
 function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || Number.isNaN(seconds) || seconds < 0) {
+    return '0ms';
+  }
   if (seconds < 1) {
-    return `${Math.round(seconds * 1000)}ms`;
+    return `${Math.max(0, Math.round(seconds * 1000))}ms`;
   }
   if (seconds < 60) {
     return `${seconds.toFixed(1)}s`;
@@ -156,6 +161,97 @@ function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   const secs = Math.round(seconds % 60);
   return `${minutes}m ${secs}s`;
+}
+
+function csvCell(value: string | number | null | undefined): string {
+  const text = String(value ?? '');
+  if (/[",\n]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function downloadContextUsageAsCSV(data: ContextSnapshotResponse): void {
+  const rows: Array<Array<string | number>> = [];
+  rows.push(['Context Usage Snapshot for Agent', data.agentId]);
+  rows.push(['Generated At', new Date().toISOString()]);
+  rows.push([]);
+
+  rows.push(['Summary']);
+  rows.push(['Total Tokens', data.totalTokens]);
+  rows.push(['Context Window', data.contextWindow]);
+  rows.push(['System Prompt Tokens', data.systemPromptTokens]);
+  rows.push(['Tool Tokens', data.toolTokens]);
+  rows.push(['History Tokens', data.historyTokens]);
+  rows.push(['Current Message Tokens', data.currentMessageTokens]);
+  rows.push(['User Message Tokens', data.userMessageTokens]);
+  rows.push(['Assistant Message Tokens', data.assistantMessageTokens]);
+  rows.push([]);
+
+  if (data.sessionUsage) {
+    rows.push(['Session Usage']);
+    rows.push(['Input Tokens', data.sessionUsage.inputTokens]);
+    rows.push(['Output Tokens', data.sessionUsage.outputTokens]);
+    rows.push(['Requests', data.sessionUsage.requests]);
+    rows.push(['Tool Calls', data.sessionUsage.toolCalls]);
+    rows.push(['Turns', data.sessionUsage.turns]);
+    rows.push(['Duration Seconds', data.sessionUsage.durationSeconds]);
+    rows.push([]);
+  }
+
+  if (data.turnUsage) {
+    rows.push(['Last Turn Usage']);
+    rows.push(['Input Tokens', data.turnUsage.inputTokens]);
+    rows.push(['Output Tokens', data.turnUsage.outputTokens]);
+    rows.push(['Requests', data.turnUsage.requests]);
+    rows.push(['Tool Calls', data.turnUsage.toolCalls]);
+    rows.push(['Duration Seconds', data.turnUsage.durationSeconds]);
+    rows.push([]);
+  }
+
+  rows.push(['Distribution']);
+  rows.push(['Category', 'Tokens']);
+  for (const category of data.distribution?.children ?? []) {
+    rows.push([category.name, category.value]);
+  }
+  rows.push([]);
+
+  if (data.perRequestUsage.length > 0) {
+    rows.push(['Per Request Usage']);
+    rows.push([
+      'Request #',
+      'Input Tokens',
+      'Output Tokens',
+      'Duration Ms',
+      'Tool Names',
+      'Timestamp',
+      'Turn ID',
+    ]);
+    for (const request of data.perRequestUsage) {
+      rows.push([
+        request.requestNum,
+        request.inputTokens,
+        request.outputTokens,
+        request.durationMs,
+        request.toolNames.join('; '),
+        request.timestamp ?? '',
+        request.turnId ?? '',
+      ]);
+    }
+  }
+
+  const csv = rows.map(row => row.map(csvCell).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  link.download = `context-usage-${data.agentId}-${ts}.csv`;
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 /**
@@ -448,8 +544,6 @@ export function ContextPanel({
         );
   const hasDistributionData =
     distribution?.children && distribution.children.length > 0;
-  const hasHistoryData =
-    snapshotData.perRequestUsage && snapshotData.perRequestUsage.length > 0;
 
   return (
     <Box>
@@ -471,12 +565,22 @@ export function ContextPanel({
         >
           Context Usage
         </Heading>
-        {sentMessageCount > 0 && (
-          <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
-            {sentMessageCount}{' '}
-            {sentMessageCount === 1 ? 'message sent' : 'messages sent'}
-          </Text>
-        )}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          {sentMessageCount > 0 && (
+            <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
+              {sentMessageCount}{' '}
+              {sentMessageCount === 1 ? 'message sent' : 'messages sent'}
+            </Text>
+          )}
+          <Button
+            size="small"
+            variant="invisible"
+            leadingVisual={DownloadIcon}
+            onClick={() => downloadContextUsageAsCSV(snapshotData)}
+          >
+            Download
+          </Button>
+        </Box>
       </Box>
 
       <Box
@@ -575,26 +679,22 @@ export function ContextPanel({
               setViewMode(modes[index]);
             }}
           >
-            <SegmentedControl.Button
+            <SegmentedControl.IconButton
+              aria-label="Overview"
               selected={viewMode === 'overview'}
-              leadingIcon={ListUnorderedIcon}
-            >
-              Overview
-            </SegmentedControl.Button>
-            <SegmentedControl.Button
+              icon={ListUnorderedIcon}
+            />
+            <SegmentedControl.IconButton
+              aria-label="Distribution"
               selected={viewMode === 'distribution'}
-              leadingIcon={GraphIcon}
+              icon={AppsIcon}
               disabled={!hasDistributionData}
-            >
-              Distribution
-            </SegmentedControl.Button>
-            <SegmentedControl.Button
+            />
+            <SegmentedControl.IconButton
+              aria-label="History"
               selected={viewMode === 'history'}
-              leadingIcon={ClockIcon}
-              disabled={!hasHistoryData}
-            >
-              History
-            </SegmentedControl.Button>
+              icon={GraphIcon}
+            />
           </SegmentedControl>
 
           {viewMode === 'overview' && (
@@ -818,6 +918,12 @@ export function ContextPanel({
                   ))}
               </Box>
             )}
+          </Box>
+        )}
+
+        {viewMode === 'history' && !historyChartOption && (
+          <Box sx={{ py: 3 }}>
+            <Text sx={{ color: 'fg.muted', fontSize: 1 }}>No history</Text>
           </Box>
         )}
       </Box>

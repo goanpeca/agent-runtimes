@@ -42,9 +42,9 @@ import {
   SystemView,
   useSimpleAuthStore,
 } from '@datalayer/core/lib/views/otel';
-import { SignInSimple } from '@datalayer/core/lib/views/iam';
 import { useCoreStore } from '@datalayer/core';
 import { ThemedProvider } from './utils/themedProvider';
+import { AuthRequiredView } from './components';
 import { ChatSidebar } from '../chat';
 import { DEFAULT_MODEL } from '../specs';
 import type { AgentLibrary, ProtocolConfig } from '../types';
@@ -510,19 +510,12 @@ const AgentOtelExampleInner: React.FC<{
  */
 const AgentOtelExample: React.FC = () => {
   const token = useSimpleAuthStore(s => s.token);
-  const setAuth = useSimpleAuthStore(s => s.setAuth);
   const clearAuth = useSimpleAuthStore(s => s.clearAuth);
 
   return (
     <ThemedProvider>
       {!token ? (
-        <SignInSimple
-          onSignIn={setAuth}
-          onApiKeySignIn={apiKey => setAuth(apiKey, 'api-key-user')}
-          title="Datalayer OTEL"
-          description="Sign in to access the observability dashboard."
-          leadingIcon={<TelescopeIcon size={24} />}
-        />
+        <AuthRequiredView />
       ) : (
         <AgentOtelExampleInner token={token} onSignOut={clearAuth} />
       )}

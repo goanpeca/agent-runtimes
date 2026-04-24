@@ -29,7 +29,7 @@ import React, {
 } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Box } from '@datalayer/primer-addons';
-import { ErrorView } from './components';
+import { AuthRequiredView, ErrorView } from './components';
 import {
   Button,
   Flash,
@@ -39,15 +39,8 @@ import {
   Spinner,
   Text,
 } from '@primer/react';
-import {
-  CodeIcon,
-  SignOutIcon,
-  StopIcon,
-  TerminalIcon,
-} from '@primer/octicons-react';
+import { CodeIcon, StopIcon, TerminalIcon } from '@primer/octicons-react';
 import { useSimpleAuthStore } from '@datalayer/core/lib/views/otel';
-import { SignInSimple } from '@datalayer/core/lib/views/iam';
-import { UserBadge } from '@datalayer/core/lib/views/profile';
 import { ThemedProvider } from './utils/themedProvider';
 import { uniqueAgentId } from './utils/agentId';
 import { Chat } from '../chat';
@@ -829,17 +822,6 @@ const AgentSandboxInner: React.FC<{ onLogout: () => void }> = ({
                     </SegmentedControl.Button>
                   </SegmentedControl>
                   {variantSwitching && <Spinner size="small" />}
-                  {token && <UserBadge token={token} variant="small" />}
-                  <Button
-                    size="small"
-                    variant="invisible"
-                    onClick={onLogout}
-                    leadingVisual={SignOutIcon}
-                    sx={{ color: 'fg.muted' }}
-                    disabled={isTransitionLocked}
-                  >
-                    Sign out
-                  </Button>
                 </Box>
               }
               suggestions={[
@@ -893,7 +875,7 @@ const syncTokenToIamStore = (newToken: string) => {
 };
 
 const AgentSandboxExample: React.FC = () => {
-  const { token, setAuth, clearAuth } = useSimpleAuthStore();
+  const { token, clearAuth } = useSimpleAuthStore();
   const hasSynced = useRef(false);
 
   useEffect(() => {
@@ -902,15 +884,6 @@ const AgentSandboxExample: React.FC = () => {
       syncTokenToIamStore(token);
     }
   }, [token]);
-
-  const handleSignIn = useCallback(
-    (newToken: string, handle: string) => {
-      setAuth(newToken, handle);
-      hasSynced.current = true;
-      syncTokenToIamStore(newToken);
-    },
-    [setAuth],
-  );
 
   const handleLogout = useCallback(() => {
     clearAuth();
@@ -923,13 +896,7 @@ const AgentSandboxExample: React.FC = () => {
   if (!token) {
     return (
       <ThemedProvider>
-        <SignInSimple
-          onSignIn={handleSignIn}
-          onApiKeySignIn={apiKey => handleSignIn(apiKey, 'api-key-user')}
-          title="Sandbox Agent"
-          description="Sign in to explore sandbox variants and live WebSocket status."
-          leadingIcon={<TerminalIcon size={24} />}
-        />
+        <AuthRequiredView />
       </ThemedProvider>
     );
   }

@@ -5,7 +5,7 @@
 
 /// <reference types="vite/client" />
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   loadJupyterConfig,
@@ -25,13 +25,17 @@ import {
   themeConfigs,
   Box,
 } from '@datalayer/primer-addons';
-import { HomeIcon } from '@primer/octicons-react';
+import { HomeIcon, SignInIcon, SignOutIcon } from '@primer/octicons-react';
+import { Button } from '@primer/react';
 import { AppearanceControlsWithStore } from '@datalayer/primer-addons/lib/components/appearance';
 import {
   coreStore,
   iamStore,
   createDatalayerServiceManager,
 } from '@datalayer/core';
+import { SignInSimple } from '@datalayer/core/lib/views/iam';
+import { UserBadge } from '@datalayer/core/lib/views/profile';
+import { useSimpleAuthStore } from '@datalayer/core/lib/views/otel';
 import {
   agentRuntimeStore,
   useChatStore,
@@ -419,13 +423,79 @@ export const ExampleApp: React.FC = () => {
   const handleExampleChange = async (newExample: string) => {
     if (newExample === selectedExample || !serviceManager) return;
 
-    // Start a fully fresh session when switching examples.
-    // Chat state can survive in multiple store branches (messages, threads,
-    // pending tool calls, runtime snapshots), so use full store resets.
+    // 1) Unmount the current example FIRST so its useEffect cleanup hooks
+    //    (e.g. AGUIAdapter.disconnect → /ag-ui/terminate, abort fetches,
+    //    close runtime sandboxes) run against a still-valid store state.
+    setIsChangingExample(true);
+    setExampleComponent(null);
+    // Yield to React so the unmount actually commits before we wipe stores.
+    await new Promise<void>(resolve => {
+      requestAnimationFrame(() => resolve());
+    });
+
+    // 2) Tear down any server-side agents created by the previous example.
+    //    Each example caches its agent id in sessionStorage via
+    //    `uniqueAgentId(baseName)` under key `agent-runtimes:agentId:<base>`.
+    //    Delete those agents on the server and drop the cached ids so the
+    //    next example (and a future re-entry into this one) boots fresh.
+    const agentBaseUrl =
+      import.meta.env.VITE_BASE_URL || 'http://localhost:8765';
+    const token = useSimpleAuthStore.getState().token;
+    const agentIdKeys: string[] = [];
+    try {
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i);
+        if (key && key.startsWith('agent-runtimes:agentId:')) {
+          agentIdKeys.push(key);
+        }
+      }
+    } catch {
+      // sessionStorage unavailable; skip teardown.
+    }
+    await Promise.all(
+      agentIdKeys.map(async key => {
+        let agentId: string | null = null;
+        try {
+          agentId = sessionStorage.getItem(key);
+        } catch {
+          /* ignore */
+        }
+        if (!agentId) return;
+        try {
+          await fetch(
+            `${agentBaseUrl}/api/v1/agents/${encodeURIComponent(agentId)}`,
+            {
+              method: 'DELETE',
+              headers: token ? { Authorization: `Bearer ${token}` } : {},
+            },
+          );
+        } catch {
+          // Best-effort teardown: ignore network / 404 errors.
+        }
+        try {
+          sessionStorage.removeItem(key);
+        } catch {
+          /* ignore */
+        }
+      }),
+    );
+
+    // 3) Wipe every piece of in-process agent state so the next example boots
+    //    with a clean slate (no leftover messages, threads, pending tool
+    //    calls, runtime snapshots, monitoring caches, or sockets).
     useChatStore.getState().reset();
     useConversationStore.getState().clearAll();
     agentRuntimeStore.getState().reset();
 
+    // 4) Drop the persisted slice from localStorage so a fresh example never
+    //    rehydrates a previous example's agents / monitoring cache.
+    try {
+      localStorage.removeItem('agent-runtimes-storage');
+    } catch {
+      // Ignore storage failures (e.g. private mode).
+    }
+
+    // 5) Load and mount the new example.
     setSelectedExample(newExample);
     localStorage.setItem('selectedExample', newExample);
     await loadExample(newExample, serviceManager);
@@ -510,6 +580,33 @@ const ExampleAppThemed: React.FC<{
   const { colorMode, theme: themeVariant } = useExampleThemeStore();
   const cfg = themeConfigs[themeVariant];
   const logoColors = getLogoColors(themeVariant, colorMode);
+  const { token, setAuth, clearAuth } = useSimpleAuthStore();
+  const [showSignIn, setShowSignIn] = useState(false);
+
+  const syncTokenToIamStore = useCallback((newToken: string | undefined) => {
+    import('@datalayer/core/lib/state').then(({ iamStore: coreIamStore }) => {
+      coreIamStore.setState({ token: newToken });
+    });
+  }, []);
+
+  useEffect(() => {
+    // Keep iamStore aligned with persisted auth token on app load/refresh.
+    syncTokenToIamStore(token || undefined);
+  }, [token, syncTokenToIamStore]);
+
+  const handleHeaderSignIn = useCallback(
+    (newToken: string, handle: string) => {
+      setAuth(newToken, handle);
+      syncTokenToIamStore(newToken);
+      setShowSignIn(false);
+    },
+    [setAuth, syncTokenToIamStore],
+  );
+
+  const handleHeaderLogout = useCallback(() => {
+    clearAuth();
+    syncTokenToIamStore(undefined);
+  }, [clearAuth, syncTokenToIamStore]);
 
   return (
     <DatalayerThemeProvider
@@ -595,14 +692,84 @@ const ExampleAppThemed: React.FC<{
                 },
               }}
             >
-              {availableExamples
-                .slice()
-                .sort((a, b) => a.title.localeCompare(b.title))
-                .map(example => (
-                  <option key={example.id} value={example.id}>
-                    {example.title}
-                  </option>
-                ))}
+              {(() => {
+                const home = availableExamples.find(
+                  e => e.id === 'HomeExample',
+                );
+                const rest = availableExamples.filter(
+                  e => e.id !== 'HomeExample',
+                );
+
+                // Classify each example into a named group.
+                const groupOf = (id: string): string => {
+                  if (id.startsWith('A2Ui')) return 'A2UI';
+                  if (id.startsWith('AgUi')) return 'AG-UI';
+                  if (id.startsWith('CopilotKit')) return 'CopilotKit';
+                  if (id.startsWith('Agent')) return 'Agent';
+                  if (id.startsWith('Chat')) return 'Chat';
+                  if (id.startsWith('Lexical')) return 'Lexical';
+                  if (
+                    id.startsWith('Notebook') ||
+                    id === 'DatalayerNotebookExample'
+                  )
+                    return 'Notebook';
+                  return 'Cell';
+                };
+
+                const groupOrder = [
+                  'A2UI',
+                  'AG-UI',
+                  'Agent',
+                  'Chat',
+                  'CopilotKit',
+                  'Lexical',
+                  'Notebook',
+                  'Cell',
+                ];
+
+                const grouped = new Map<string, typeof rest>();
+                for (const ex of rest) {
+                  const g = groupOf(ex.id);
+                  if (!grouped.has(g)) grouped.set(g, []);
+                  grouped.get(g)!.push(ex);
+                }
+                for (const list of grouped.values()) {
+                  list.sort((a, b) => a.title.localeCompare(b.title));
+                }
+
+                const nodes: React.ReactNode[] = [];
+                if (home) {
+                  nodes.push(
+                    <option key={home.id} value={home.id}>
+                      {home.title}
+                    </option>,
+                  );
+                }
+
+                let sepIndex = 0;
+                for (const g of groupOrder) {
+                  const items = grouped.get(g);
+                  if (!items || items.length === 0) continue;
+                  nodes.push(
+                    <option
+                      key={`__sep_${sepIndex++}`}
+                      disabled
+                      value={`__sep_${sepIndex}`}
+                    >
+                      ────── {g} ──────
+                    </option>,
+                  );
+                  for (const example of items) {
+                    nodes.push(
+                      <option key={example.id} value={example.id}>
+                        {example.title}
+                      </option>,
+                    );
+                  }
+                }
+
+                return <>{nodes}</>;
+              })()}
             </Box>
             {isChangingExample && (
               <Box as="span" sx={{ color: 'fg.muted', fontSize: 0 }}>
@@ -619,6 +786,32 @@ const ExampleAppThemed: React.FC<{
           {/* Right: theme picker + color mode + logo */}
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 3 }}>
             <AppearanceControlsWithStore useStore={useExampleThemeStore} />
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              {token ? (
+                <>
+                  <UserBadge token={token} variant="small" />
+                  <Button
+                    size="small"
+                    variant="invisible"
+                    onClick={handleHeaderLogout}
+                    leadingVisual={SignOutIcon}
+                    sx={{ color: 'fg.muted' }}
+                  >
+                    Sign out
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  size="small"
+                  variant="invisible"
+                  onClick={() => setShowSignIn(true)}
+                  leadingVisual={SignInIcon}
+                  sx={{ color: 'fg.muted' }}
+                >
+                  Sign in
+                </Button>
+              )}
+            </Box>
             <Box
               as="a"
               href="https://datalayer.ai"
@@ -642,6 +835,43 @@ const ExampleAppThemed: React.FC<{
           </Box>
         </Box>
 
+        {showSignIn && !token && (
+          <Box
+            sx={{
+              position: 'fixed',
+              top: 60,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 150,
+              bg: 'canvas.backdrop',
+              p: 3,
+              overflow: 'auto',
+            }}
+          >
+            <Box sx={{ maxWidth: 640, mx: 'auto' }}>
+              <SignInSimple
+                onSignIn={handleHeaderSignIn}
+                onApiKeySignIn={apiKey =>
+                  handleHeaderSignIn(apiKey, 'api-key-user')
+                }
+                title="Agent Runtimes Examples"
+                description="Sign in to run authenticated examples and tools."
+                leadingIcon={<HomeIcon size={24} />}
+              />
+              <Box sx={{ mt: 2, display: 'flex', justifyContent: 'center' }}>
+                <Button
+                  size="small"
+                  variant="invisible"
+                  onClick={() => setShowSignIn(false)}
+                >
+                  Cancel
+                </Button>
+              </Box>
+            </Box>
+          </Box>
+        )}
+
         {/* ── Content area ───────────────────────────────── */}
         <Box
           sx={{
@@ -656,8 +886,8 @@ const ExampleAppThemed: React.FC<{
               <p>Please wait while the example loads.</p>
             </Box>
           ) : ExampleComponent ? (
-            <ExampleWrapper>
-              <ExampleComponent {...exampleProps} />
+            <ExampleWrapper key={selectedExample}>
+              <ExampleComponent key={selectedExample} {...exampleProps} />
             </ExampleWrapper>
           ) : null}
         </Box>

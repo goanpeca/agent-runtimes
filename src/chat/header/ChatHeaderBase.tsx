@@ -14,14 +14,12 @@
  */
 
 import { type ReactNode } from 'react';
-import { Heading, IconButton, Truncate } from '@primer/react';
+import { Heading, IconButton, Text, Truncate } from '@primer/react';
 import { Box } from '@datalayer/primer-addons';
 import {
   PlusIcon,
   TrashIcon,
   GearIcon,
-  CircleIcon,
-  SquareFillIcon,
   CommentDiscussionIcon,
   DeviceMobileIcon,
   SidebarExpandIcon,
@@ -30,7 +28,8 @@ import {
 import { AiAgentIcon } from '@datalayer/icons-react';
 
 import type { ChatViewMode, HeaderButtonsConfig } from '../../types/chat';
-import type { SandboxStatusData } from '../../types/context';
+import type { SandboxWsStatus } from '../../types/sandbox';
+import { SandboxStatusIndicator } from '../indicators/SandboxStatusIndicator';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -38,16 +37,21 @@ import type { SandboxStatusData } from '../../types/context';
 
 export interface ChatBaseHeaderProps {
   title?: string;
+  subtitle?: string;
   brandIcon?: ReactNode;
   headerContent?: ReactNode;
   headerActions?: ReactNode;
   showInformation?: boolean;
   onInformationClick?: () => void;
   padding: number;
-  /** Sandbox status from the backend */
-  sandboxStatus?: SandboxStatusData;
-  /** Callback to interrupt sandbox code execution */
-  onSandboxInterrupt: () => void;
+  /** API base URL passed to SandboxStatusIndicator */
+  sandboxApiBase?: string;
+  /** Auth token passed to SandboxStatusIndicator */
+  sandboxAuthToken?: string;
+  /** Agent ID passed to SandboxStatusIndicator for agent-scoped status */
+  sandboxAgentId?: string;
+  /** Optional sandbox status override for immediate indicator updates */
+  sandboxStatusData?: SandboxWsStatus | null;
   /** Header button configuration */
   headerButtons?: HeaderButtonsConfig;
   /** Current count of messages (used to conditionally show clear button) */
@@ -68,14 +72,17 @@ export interface ChatBaseHeaderProps {
 
 export function ChatBaseHeader({
   title,
+  subtitle,
   brandIcon,
   headerContent,
   headerActions,
   showInformation,
   onInformationClick,
   padding,
-  sandboxStatus,
-  onSandboxInterrupt,
+  sandboxApiBase,
+  sandboxAuthToken,
+  sandboxAgentId,
+  sandboxStatusData,
   headerButtons,
   messageCount,
   onNewChat,
@@ -111,20 +118,45 @@ export function ChatBaseHeader({
           }}
         >
           {brandIcon || <AiAgentIcon colored size={20} />}
-          {title && (
-            <Heading
-              as="h3"
+          {(title || subtitle) && (
+            <Box
               sx={{
-                fontSize: 2,
-                fontWeight: 'semibold',
+                display: 'flex',
+                flexDirection: 'column',
                 minWidth: 0,
                 maxWidth: '100%',
               }}
             >
-              <Truncate title={title} maxWidth="28ch">
-                {title}
-              </Truncate>
-            </Heading>
+              {title && (
+                <Heading
+                  as="h3"
+                  sx={{
+                    fontSize: 2,
+                    fontWeight: 'semibold',
+                    minWidth: 0,
+                    maxWidth: '100%',
+                  }}
+                >
+                  <Truncate title={title} maxWidth="28ch">
+                    {title}
+                  </Truncate>
+                </Heading>
+              )}
+              {subtitle && (
+                <Text
+                  sx={{
+                    fontSize: 0,
+                    color: 'fg.muted',
+                    minWidth: 0,
+                    maxWidth: '100%',
+                  }}
+                >
+                  <Truncate title={subtitle} maxWidth="40ch">
+                    {subtitle}
+                  </Truncate>
+                </Text>
+              )}
+            </Box>
           )}
           {/* Inline header content (e.g., protocol label) */}
           {headerContent}
@@ -143,32 +175,12 @@ export function ChatBaseHeader({
           sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}
         >
           {/* Sandbox execution status indicator */}
-          {sandboxStatus?.available &&
-            sandboxStatus?.sandbox_running &&
-            (sandboxStatus.is_executing ? (
-              <IconButton
-                icon={SquareFillIcon}
-                aria-label="Interrupt code execution"
-                variant="invisible"
-                size="small"
-                sx={{ color: 'danger.fg' }}
-                onClick={onSandboxInterrupt}
-              />
-            ) : (
-              <Box
-                sx={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  width: 28,
-                  height: 28,
-                  color: 'fg.subtle',
-                }}
-                title="Code sandbox ready"
-              >
-                <CircleIcon size={12} />
-              </Box>
-            ))}
+          <SandboxStatusIndicator
+            apiBase={sandboxApiBase}
+            authToken={sandboxAuthToken}
+            agentId={sandboxAgentId}
+            statusOverride={sandboxStatusData}
+          />
           {/* Header buttons */}
           {headerButtons?.showNewChat && (
             <IconButton

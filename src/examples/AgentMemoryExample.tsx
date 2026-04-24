@@ -28,16 +28,14 @@ import {
   Label,
   Flash,
 } from '@primer/react';
-import { SearchIcon, DatabaseIcon, SignOutIcon } from '@primer/octicons-react';
+import { SearchIcon, DatabaseIcon } from '@primer/octicons-react';
 import { Box } from '@datalayer/primer-addons';
-import { ErrorView } from './components';
+import { AuthRequiredView, ErrorView } from './components';
 import { ThemedProvider } from './utils/themedProvider';
 import { uniqueAgentId } from './utils/agentId';
 
 const queryClient = new QueryClient();
 import { useSimpleAuthStore } from '@datalayer/core/lib/views/otel';
-import { SignInSimple } from '@datalayer/core/lib/views/iam';
-import { UserBadge } from '@datalayer/core/lib/views/profile';
 import { Chat } from '../chat';
 import { useAgentRuntimes } from '../hooks/useAgentRuntimes';
 
@@ -204,16 +202,6 @@ const AgentMemoryInner: React.FC<{ onLogout: () => void }> = ({ onLogout }) => {
         <Heading as="h3" sx={{ fontSize: 2, flex: 1 }}>
           Durable Memory — {podName}
         </Heading>
-        {token && <UserBadge token={token} variant="small" />}
-        <Button
-          size="small"
-          variant="invisible"
-          onClick={onLogout}
-          leadingVisual={SignOutIcon}
-          sx={{ color: 'fg.muted' }}
-        >
-          Sign out
-        </Button>
       </Box>
       <Box sx={{ display: 'flex', flex: 1, minHeight: 0 }}>
         {/* Left: Chat */}
@@ -403,7 +391,7 @@ const syncTokenToIamStore = (token: string) => {
 // ─── Main component with auth gate ─────────────────────────────────────────
 
 const AgentMemoryExample: React.FC = () => {
-  const { token, setAuth, clearAuth } = useSimpleAuthStore();
+  const { token, clearAuth } = useSimpleAuthStore();
   const hasSynced = useRef(false);
 
   useEffect(() => {
@@ -412,15 +400,6 @@ const AgentMemoryExample: React.FC = () => {
       syncTokenToIamStore(token);
     }
   }, [token]);
-
-  const handleSignIn = useCallback(
-    (newToken: string, handle: string) => {
-      setAuth(newToken, handle);
-      hasSynced.current = true;
-      syncTokenToIamStore(newToken);
-    },
-    [setAuth],
-  );
 
   const handleLogout = useCallback(() => {
     clearAuth();
@@ -433,13 +412,7 @@ const AgentMemoryExample: React.FC = () => {
   if (!token) {
     return (
       <ThemedProvider>
-        <SignInSimple
-          onSignIn={handleSignIn}
-          onApiKeySignIn={apiKey => handleSignIn(apiKey, 'api-key-user')}
-          title="Memory Agent"
-          description="Sign in to use agents with persistent memory."
-          leadingIcon={<DatabaseIcon size={24} />}
-        />
+        <AuthRequiredView />
       </ThemedProvider>
     );
   }

@@ -9,26 +9,25 @@ provides:
 1. ``ToolApprovalConfig`` — configuration for the approval flow.
 2. ``ToolApprovalManager`` — manages approval records locally and waits for
    human decisions via asyncio.Event (in-process signaling over WebSocket).
-3. ``ToolApprovalCapability`` — a pydantic-ai ``AbstractCapability`` that
+3. ``ToolsGuardrailCapability`` — a pydantic-ai ``AbstractCapability`` that
    intercepts tool calls needing approval via ``before_tool_execute``.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlencode
 
 from pydantic_ai import RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import ToolDefinition
 
-from .guardrails import GuardrailBlockedError
+from . import GuardrailBlockedError
 
 logger = logging.getLogger(__name__)
 
@@ -175,184 +174,6 @@ class ToolApprovalManager:
     def __init__(self, config: ToolApprovalConfig):
         self.config = config
 
-    def _resolve_ai_agents_ws_url(self, base_url: str, token: str | None = None) -> str:
-        """Resolve ai-agents websocket URL from an HTTP(S) base URL."""
-        stripped = base_url.rstrip("/")
-        suffix = "/api/ai-agents/v1"
-        if stripped.endswith(suffix):
-            stripped = stripped[: -len(suffix)]
-
-        if stripped.startswith("https://"):
-            ws_base = "wss://" + stripped[len("https://") :]
-        elif stripped.startswith("http://"):
-            ws_base = "ws://" + stripped[len("http://") :]
-        elif stripped.startswith("wss://") or stripped.startswith("ws://"):
-            ws_base = stripped
-        else:
-            ws_base = "wss://" + stripped
-
-        params = {}
-        if token:
-            params["token"] = token
-        if self_agent_id := (self.config.agent_id or "").strip():
-            params["agent_id"] = self_agent_id
-
-        query = f"?{urlencode(params)}" if params else ""
-        return f"{ws_base}/api/ai-agents/v1/ws{query}"
-
-    async def _bridge_remote_decision_from_ai_agents(
-        self,
-        *,
-        approval_id: str,
-        remote_approval_id: str | None,
-        tool_call_id: str | None,
-    ) -> None:
-        """Listen for remote approval decisions and mirror them locally.
-
-        This allows request_and_wait() to resume when approvals are actioned
-        from the datalayer-ai-agents UI rather than the local runtime socket.
-        """
-        if not self.config.user_jwt_token:
-            return
-
-        try:
-            from datalayer_core.utils.urls import DatalayerURLs
-            from websockets.asyncio.client import connect as ws_connect
-
-            from agent_runtimes.routes.tool_approvals import (
-                update_local_approval_status,
-            )
-
-            urls = DatalayerURLs.from_environment()
-            ai_agents_url = getattr(urls, "ai_agents_url", None)
-            if not ai_agents_url:
-                return
-
-            ws_url = self._resolve_ai_agents_ws_url(
-                str(ai_agents_url), self.config.user_jwt_token
-            )
-            logger.info(
-                "[tool-approval:bridge] Connecting to ai-agents WS for approval_id=%s "
-                "remote_approval_id=%s tool_call_id=%s",
-                approval_id,
-                remote_approval_id,
-                tool_call_id,
-            )
-            async with ws_connect(ws_url, close_timeout=10.0) as websocket:
-                logger.info(
-                    "[tool-approval:bridge] Connected to ai-agents WS, waiting for decision on approval_id=%s",
-                    approval_id,
-                )
-                # Prime with a full snapshot in case approval already happened.
-                await websocket.send(json.dumps({"type": "tool-approvals-history"}))
-
-                while True:
-                    raw_message = await websocket.recv()
-                    if not isinstance(raw_message, str):
-                        continue
-
-                    payload: dict[str, Any] | None = None
-                    try:
-                        parsed_payload = json.loads(raw_message)
-                    except json.JSONDecodeError:
-                        logger.debug(
-                            "[tool-approval:bridge] Ignoring non-JSON websocket message"
-                        )
-                    else:
-                        if isinstance(parsed_payload, dict):
-                            payload = parsed_payload
-
-                    if payload is None:
-                        continue
-
-                    msg_type = payload.get("type")
-                    msg_event = payload.get("event")
-
-                    records: list[dict[str, Any]] = []
-                    if msg_type == "tool-approvals-history":
-                        data = payload.get("data") or {}
-                        approvals = data.get("approvals")
-                        if isinstance(approvals, list):
-                            records = [r for r in approvals if isinstance(r, dict)]
-                    elif isinstance(msg_event, str) and msg_event.startswith(
-                        "tool_approval_"
-                    ):
-                        data = payload.get("data") or payload.get("payload")
-                        if isinstance(data, dict):
-                            records = [data]
-
-                    if not records:
-                        continue
-
-                    for record in records:
-                        record_id = record.get("id")
-                        record_tool_call_id = record.get("tool_call_id") or record.get(
-                            "toolCallId"
-                        )
-                        status = str(record.get("status") or "").lower()
-                        note = record.get("note")
-                        note_value = note if isinstance(note, str) else None
-
-                        matched_by_local_id = (
-                            isinstance(record_id, str) and record_id == approval_id
-                        )
-                        matched_by_remote_id = (
-                            isinstance(record_id, str)
-                            and isinstance(remote_approval_id, str)
-                            and remote_approval_id
-                            and record_id == remote_approval_id
-                        )
-                        matched_by_tool_call = (
-                            isinstance(record_tool_call_id, str)
-                            and isinstance(tool_call_id, str)
-                            and tool_call_id
-                            and record_tool_call_id == tool_call_id
-                        )
-                        if not (
-                            matched_by_local_id
-                            or matched_by_remote_id
-                            or matched_by_tool_call
-                        ):
-                            continue
-
-                        if status == "approved":
-                            await update_local_approval_status(
-                                approval_id,
-                                status="approved",
-                                note=note_value,
-                            )
-                            logger.info(
-                                "[tool-approval:bridge] Mirrored remote APPROVED decision "
-                                "for approval_id=%s remote_approval_id=%s tool_call_id=%s",
-                                approval_id,
-                                remote_approval_id,
-                                tool_call_id,
-                            )
-                            return
-
-                        if status == "rejected":
-                            await update_local_approval_status(
-                                approval_id,
-                                status="rejected",
-                                note=note_value,
-                            )
-                            logger.info(
-                                "[tool-approval:bridge] Mirrored remote REJECTED decision "
-                                "for approval_id=%s remote_approval_id=%s tool_call_id=%s",
-                                approval_id,
-                                remote_approval_id,
-                                tool_call_id,
-                            )
-                            return
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "[tool-approval:bridge] Remote ai-agents bridge stopped for approval_id=%s: %s",
-                approval_id,
-                exc,
-            )
-
     async def close(self) -> None:
         """Compatibility no-op for adapter cleanup paths.
 
@@ -390,12 +211,63 @@ class ToolApprovalManager:
         is received from the frontend.
         """
         from agent_runtimes.routes.tool_approvals import (
+            _APPROVALS,
+            _APPROVALS_LOCK,
             ToolApprovalCreateRequest,
             _create_approval,
             forward_approval_to_ai_agents,
+            register_approval_credentials,
             register_pending_approval_event,
+            register_remote_approval_mapping,
             remove_pending_approval_event,
         )
+
+        # Dedup against any recently-approved record for the same tool BEFORE
+        # creating a new approval. This catches the case where multiple
+        # capabilities (e.g. ToolsGuardrailCapability + MCPToolsGuardrailCapability)
+        # both intercept the same tool call and would otherwise each create
+        # an independent approval record causing the user to approve twice.
+        recent_window_seconds = 120.0
+        now = datetime.now(timezone.utc)
+        async with _APPROVALS_LOCK:
+            for approval in _APPROVALS.values():
+                if approval.status != "approved":
+                    continue
+                if approval.tool_name != tool_name:
+                    continue
+                if tool_call_id and approval.tool_call_id == tool_call_id:
+                    logger.info(
+                        "[tool-approval:request_and_wait] Tool '%s' already approved "
+                        "(approval_id=%s, tool_call_id=%s) — skipping",
+                        tool_name,
+                        approval.id,
+                        tool_call_id,
+                    )
+                    return {
+                        "status": "approved",
+                        "id": approval.id,
+                        "tool_name": tool_name,
+                    }
+                try:
+                    ts = datetime.fromisoformat(
+                        approval.updated_at.replace("Z", "+00:00")
+                    )
+                    age = (now - ts).total_seconds()
+                except Exception:
+                    age = 0.0
+                if 0 <= age <= recent_window_seconds:
+                    logger.info(
+                        "[tool-approval:request_and_wait] Tool '%s' already approved "
+                        "recently (approval_id=%s, age=%.2fs) — skipping",
+                        tool_name,
+                        approval.id,
+                        age,
+                    )
+                    return {
+                        "status": "approved",
+                        "id": approval.id,
+                        "tool_name": tool_name,
+                    }
 
         req = ToolApprovalCreateRequest(
             agent_id=self.config.agent_id,
@@ -407,26 +279,60 @@ class ToolApprovalManager:
         record = await _create_approval(req)
         approval_id = record.id
 
+        # Fast-path: if the record was already decided (e.g. continuation turn
+        # returned an existing approved/rejected record), skip the wait.
+        if record.status == "approved":
+            logger.info(
+                "Tool '%s' already approved (approval_id=%s) — skipping wait",
+                tool_name,
+                approval_id,
+            )
+            return {"status": "approved", "id": approval_id, "tool_name": tool_name}
+        if record.status == "rejected":
+            logger.info(
+                "Tool '%s' already rejected (approval_id=%s) — skipping wait",
+                tool_name,
+                approval_id,
+            )
+            raise ToolApprovalRejectedError(tool_name, record.note)
+
         # Register waiter first so any mirrored decision can immediately unblock.
         event, result = register_pending_approval_event(approval_id)
 
+        # Resolve the user JWT token: prefer per-request context (set by transports
+        # like vercel_ai/agui/acp) and fall back to the static config token loaded
+        # from env. This ensures MCP and skill capabilities — which build their own
+        # ToolApprovalManager via ToolApprovalConfig.from_env() and would otherwise
+        # have no token — still forward approvals to the ai-agents backend so the
+        # SaaS UI sees them.
+        try:
+            from ..context.identities import get_request_user_jwt
+
+            request_jwt = get_request_user_jwt()
+        except Exception:
+            request_jwt = None
+        effective_user_jwt = request_jwt or self.config.user_jwt_token
+
         remote_approval_id: str | None = None
-        if self.config.user_jwt_token:
+        if effective_user_jwt:
+            # Always remember the JWT so that even if the upfront forward
+            # fails or ai-agents is momentarily unavailable, the eventual
+            # decision can still be relayed (lazily forwarding on decision
+            # if needed) so all observers see the outcome.
+            register_approval_credentials(approval_id, effective_user_jwt)
             # Sync creation to ai-agents first so we can correlate future decisions
             # by its remote approval id even when tool_call_id is missing.
             remote_approval_id = await forward_approval_to_ai_agents(
-                record, self.config.user_jwt_token
+                record, effective_user_jwt
             )
-
-        remote_bridge_task: asyncio.Task[None] | None = None
-        if self.config.user_jwt_token:
-            remote_bridge_task = asyncio.create_task(
-                self._bridge_remote_decision_from_ai_agents(
-                    approval_id=approval_id,
-                    remote_approval_id=remote_approval_id,
-                    tool_call_id=tool_call_id,
+            if remote_approval_id:
+                # Store the local→remote mapping so that a WS decision arriving
+                # on the runtime-local socket is relayed back to the ai-agents
+                # backend and becomes visible in the main UI tool-approvals view.
+                register_remote_approval_mapping(
+                    approval_id, remote_approval_id, effective_user_jwt
                 )
-            )
+
         logger.info(
             "Waiting for human approval of tool '%s' (approval_id=%s, timeout=%ss)",
             tool_name,
@@ -440,12 +346,6 @@ class ToolApprovalManager:
                 f"Approval for tool '{tool_name}' timed out after {self.config.timeout}s"
             )
         finally:
-            if remote_bridge_task is not None:
-                remote_bridge_task.cancel()
-                try:
-                    await remote_bridge_task
-                except asyncio.CancelledError:
-                    pass
             remove_pending_approval_event(approval_id)
 
         if result.get("approved"):
@@ -468,7 +368,7 @@ class ToolApprovalManager:
 
 
 @dataclass
-class ToolApprovalCapability(AbstractCapability[Any]):
+class ToolsGuardrailCapability(AbstractCapability[Any]):
     """Capability that gates tool execution behind async human approval.
 
     When a tool requires approval, an in-memory approval record is created and
@@ -499,27 +399,16 @@ class ToolApprovalCapability(AbstractCapability[Any]):
 
         # If this tool call was already approved (DeferredToolRequests continuation),
         # skip the approval gate so the tool executes without creating a new record.
+        #
+        # In some continuation paths, pydantic-ai can re-emit the same logical
+        # approval turn with a different tool_call_id. To avoid duplicate prompts,
+        # we also allow a narrow fallback: same tool_name + same safe_args that
+        # was approved very recently.
         tool_call_id = getattr(call, "tool_call_id", None)
-        if tool_call_id:
-            from agent_runtimes.routes.tool_approvals import (
-                _APPROVALS,
-                _APPROVALS_LOCK,
-            )
-
-            async with _APPROVALS_LOCK:
-                for approval in _APPROVALS.values():
-                    if (
-                        approval.tool_call_id == tool_call_id
-                        and approval.status == "approved"
-                    ):
-                        logger.info(
-                            "Tool '%s' already approved via deferred continuation "
-                            "(approval_id=%s, tool_call_id=%s) — skipping re-approval",
-                            call.tool_name,
-                            approval.id,
-                            tool_call_id,
-                        )
-                        return args
+        from agent_runtimes.routes.tool_approvals import (
+            _APPROVALS,
+            _APPROVALS_LOCK,
+        )
 
         safe_args: dict[str, str] = {}
         for k, v in args.items():
@@ -528,6 +417,114 @@ class ToolApprovalCapability(AbstractCapability[Any]):
             except Exception:
                 safe_args[k] = "<non-serializable>"
 
+        recent_window_seconds = 120.0
+        now = datetime.now(timezone.utc)
+
+        logger.info(
+            "[tool-approval] before_tool_execute entered tool='%s' "
+            "tool_call_id=%s (checking dedupe against %d existing records)",
+            call.tool_name,
+            tool_call_id,
+            len(_APPROVALS),
+        )
+
+        async with _APPROVALS_LOCK:
+            for approval in _APPROVALS.values():
+                # Log every candidate for diagnostics
+                logger.info(
+                    "[tool-approval:dedup-scan] candidate id=%s tool_name=%s "
+                    "status=%s tool_call_id=%s updated_at=%s",
+                    approval.id,
+                    approval.tool_name,
+                    approval.status,
+                    approval.tool_call_id,
+                    approval.updated_at,
+                )
+
+                if approval.status not in ("approved", "pending"):
+                    # Skip rejected/deleted
+                    continue
+
+                if tool_call_id and approval.tool_call_id == tool_call_id:
+                    if approval.status == "approved":
+                        logger.info(
+                            "Tool '%s' already approved via deferred continuation "
+                            "(approval_id=%s, tool_call_id=%s) — skipping re-approval",
+                            call.tool_name,
+                            approval.id,
+                            tool_call_id,
+                        )
+                        return args
+                    # tool_call_id matches but still pending — this is the
+                    # original outstanding approval for this very call. Bail
+                    # out of the loop and go wait on it rather than creating
+                    # a new duplicate record.
+                    logger.info(
+                        "Tool '%s' has a pending approval already "
+                        "(approval_id=%s, tool_call_id=%s) — waiting on existing",
+                        call.tool_name,
+                        approval.id,
+                        tool_call_id,
+                    )
+                    break
+
+                if approval.status != "approved":
+                    continue
+
+                # Fallback dedupe for continuation turns where tool_call_id is
+                # regenerated by the framework.  Match by tool_name + recent
+                # time window only — args comparison is unreliable because the
+                # stored record has stringified values and the continuation may
+                # have different formatting or extra keys.
+                if approval.tool_name != call.tool_name:
+                    continue
+
+                updated_at = approval.updated_at
+                try:
+                    ts = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                except Exception as parse_exc:
+                    logger.warning(
+                        "[tool-approval:dedup] Could not parse updated_at='%s' "
+                        "for approval_id=%s: %s",
+                        updated_at,
+                        approval.id,
+                        parse_exc,
+                    )
+                    # Be lenient — if we cannot parse the timestamp but the
+                    # name matches and status is approved, treat as a match.
+                    logger.info(
+                        "Tool '%s' already approved recently (fallback match, "
+                        "approval_id=%s) — skipping re-approval",
+                        call.tool_name,
+                        approval.id,
+                    )
+                    return args
+                age_seconds = (now - ts).total_seconds()
+                if 0 <= age_seconds <= recent_window_seconds:
+                    logger.info(
+                        "Tool '%s' already approved recently "
+                        "(approval_id=%s, age=%.2fs) — skipping re-approval",
+                        call.tool_name,
+                        approval.id,
+                        age_seconds,
+                    )
+                    return args
+                else:
+                    logger.info(
+                        "[tool-approval:dedup] candidate approval_id=%s tool='%s' "
+                        "outside window (age=%.2fs > %.2fs) — not deduping",
+                        approval.id,
+                        approval.tool_name,
+                        age_seconds,
+                        recent_window_seconds,
+                    )
+
+        logger.info(
+            "[tool-approval] No dedupe match for tool='%s' tool_call_id=%s — "
+            "requesting new approval",
+            call.tool_name,
+            tool_call_id,
+        )
         await manager.request_and_wait(
             call.tool_name,
             safe_args,

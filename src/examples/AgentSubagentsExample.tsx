@@ -18,22 +18,19 @@
 /// <reference types="vite/client" />
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { Text, Button, Spinner, Heading, Label, Timeline } from '@primer/react';
+import { Text, Spinner, Heading, Label, Timeline } from '@primer/react';
 import {
   PeopleIcon,
-  SignOutIcon,
   PersonIcon,
   CheckCircleFillIcon,
   ClockIcon,
   XCircleFillIcon,
 } from '@primer/octicons-react';
 import { Box } from '@datalayer/primer-addons';
-import { ErrorView } from './components';
+import { AuthRequiredView, ErrorView } from './components';
 import { ThemedProvider } from './utils/themedProvider';
 import { uniqueAgentId } from './utils/agentId';
 import { useSimpleAuthStore } from '@datalayer/core/lib/views/otel';
-import { SignInSimple } from '@datalayer/core/lib/views/iam';
-import { UserBadge } from '@datalayer/core/lib/views/profile';
 import { Chat } from '../chat';
 
 const AGENT_NAME = 'subagents-demo-agent';
@@ -227,16 +224,6 @@ const AgentSubagentsInner: React.FC<{ onLogout: () => void }> = ({
           </Label>
         )}
         <Label variant="accent">{SUBAGENTS.length} subagents</Label>
-        {token && <UserBadge token={token} variant="small" />}
-        <Button
-          size="small"
-          variant="invisible"
-          onClick={onLogout}
-          leadingVisual={SignOutIcon}
-          sx={{ color: 'fg.muted' }}
-        >
-          Sign out
-        </Button>
       </Box>
 
       <Box sx={{ flex: 1, minHeight: 0, display: 'flex' }}>
@@ -422,14 +409,7 @@ const AgentSubagentsInner: React.FC<{ onLogout: () => void }> = ({
 };
 
 const AgentSubagentsExample: React.FC = () => {
-  const { token, setAuth, clearAuth } = useSimpleAuthStore();
-
-  const handleSignIn = useCallback(
-    (newToken: string, handle: string) => {
-      setAuth(newToken, handle);
-    },
-    [setAuth],
-  );
+  const { token, clearAuth } = useSimpleAuthStore();
 
   const handleLogout = useCallback(() => {
     clearAuth();
@@ -438,13 +418,7 @@ const AgentSubagentsExample: React.FC = () => {
   if (!token) {
     return (
       <ThemedProvider>
-        <SignInSimple
-          onSignIn={handleSignIn}
-          onApiKeySignIn={apiKey => handleSignIn(apiKey, 'api-key-user')}
-          title="Subagents Demo"
-          description="Sign in to try multi-agent delegation with researcher and writer subagents."
-          leadingIcon={<PeopleIcon size={24} />}
-        />
+        <AuthRequiredView />
       </ThemedProvider>
     );
   }

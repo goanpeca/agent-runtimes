@@ -44,6 +44,7 @@ import {
   useAgentRuntimeMcpStatus,
   useAgentRuntimeWsState,
 } from '../stores';
+import type { CodemodeStatusData } from '../types/stream';
 
 export interface AgentDetailsProps {
   /** Agent name/title */
@@ -83,7 +84,7 @@ export interface AgentDetailsProps {
   /** Live MCP status from WS — bypasses REST polling when provided */
   mcpStatusData?: MCPToolsetsStatus | null;
   /** Live codemode status from WS — bypasses REST polling when provided */
-  codemodeStatusData?: CodemodeStatus | null;
+  codemodeStatusData?: CodemodeStatusData | null;
   /** Live context usage snapshot from WS — bypasses REST polling when provided */
   contextSnapshotData?: ContextSnapshotResponse | null;
   /** Live full context from WS — bypasses REST polling when provided */
@@ -122,13 +123,13 @@ interface CodemodeStatus {
   enabled: boolean;
   skills: Array<{
     name: string;
-    description: string;
-    tags: string[];
+    description?: string;
+    tags?: string[];
   }>;
   available_skills: Array<{
     name: string;
-    description: string;
-    tags: string[];
+    description?: string;
+    tags?: string[];
   }>;
   sandbox: SandboxStatus | null;
 }
@@ -359,7 +360,7 @@ export function AgentDetails({
   const mcpStatus =
     mcpStatusData ?? (wsMcpStatus as unknown as MCPToolsetsStatus | null);
   const codemodeStatus =
-    codemodeStatusData ??
+    (codemodeStatusData as unknown as CodemodeStatus | null) ??
     (wsCodemodeStatus as unknown as CodemodeStatus | null);
   const resolvedContextSnapshot =
     contextSnapshotData ??
@@ -1532,7 +1533,8 @@ export function AgentDetails({
                 {/* No skills available message */}
                 {codemodeStatus.available_skills.length === 0 && (
                   <Text sx={{ fontSize: 0, color: 'fg.muted' }}>
-                    No skills available. Add skills to the skills/ directory.
+                    No CodeMode skills are available for this agent. You can
+                    still use MCP tools by selecting MCP servers.
                   </Text>
                 )}
               </Box>

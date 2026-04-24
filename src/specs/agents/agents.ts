@@ -49,7 +49,7 @@ import {
 // MCP Server Lookup
 // ============================================================================
 
-const MCP_SERVER_MAP: Record<string, any> = {
+const MCP_SERVER_MAP: Record<string, AgentSpec['mcpServers'][number]> = {
   'alphavantage:0.0.1': ALPHAVANTAGE_MCP_SERVER_0_0_1,
   alphavantage: ALPHAVANTAGE_MCP_SERVER_0_0_1,
   'chart:0.0.1': CHART_MCP_SERVER_0_0_1,
@@ -77,7 +77,7 @@ const MCP_SERVER_MAP: Record<string, any> = {
 /**
  * Map skill IDs to SkillSpec objects, converting to AgentSkillSpec shape.
  */
-const SKILL_MAP: Record<string, any> = {
+const SKILL_MAP: Record<string, SkillSpec> = {
   'crawl:0.0.1': CRAWL_SKILL_SPEC_0_0_1,
   crawl: CRAWL_SKILL_SPEC_0_0_1,
   'datalayer-whoami:0.0.1': DATALAYER_WHOAMI_SKILL_SPEC_0_0_1,
@@ -109,7 +109,7 @@ function toAgentSkillSpec(skill: SkillSpec) {
 /**
  * Map tool IDs to ToolSpec objects.
  */
-const TOOL_MAP: Record<string, any> = {
+const TOOL_MAP: Record<string, NonNullable<AgentSpec['tools']>[number]> = {
   'runtime-echo:0.0.1': RUNTIME_ECHO_TOOL_SPEC_0_0_1,
   'runtime-echo': RUNTIME_ECHO_TOOL_SPEC_0_0_1,
   'runtime-send-mail:0.0.1': RUNTIME_SEND_MAIL_TOOL_SPEC_0_0_1,
@@ -121,7 +121,10 @@ const TOOL_MAP: Record<string, any> = {
 /**
  * Map frontend tool IDs to FrontendToolSpec objects.
  */
-const FRONTEND_TOOL_MAP: Record<string, any> = {
+const FRONTEND_TOOL_MAP: Record<
+  string,
+  NonNullable<AgentSpec['frontendTools']>[number]
+> = {
   'jupyter-notebook:0.0.1': JUPYTER_NOTEBOOK_FRONTEND_TOOL_SPEC_0_0_1,
   'jupyter-notebook': JUPYTER_NOTEBOOK_FRONTEND_TOOL_SPEC_0_0_1,
   'lexical-document:0.0.1': LEXICAL_DOCUMENT_FRONTEND_TOOL_SPEC_0_0_1,
@@ -1084,6 +1087,111 @@ When the user asks about hooks, use execute_code to show concrete evidence: read
   subagents: undefined,
 };
 
+export const DEMO_MCP_AGENT_SPEC_0_0_1: AgentSpec = {
+  id: 'demo-mcp',
+  version: '0.0.1',
+  name: 'Demo MCP',
+  description: `Demo agent using MCP servers directly (without codemode conversion).`,
+  tags: ['demo', 'mcp', 'tavily'],
+  enabled: true,
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+  mcpServers: [MCP_SERVER_MAP['tavily:0.0.1']],
+  skills: [toAgentSkillSpec(SKILL_MAP['jokes:0.0.1'])],
+  tools: [],
+  frontendTools: [
+    FRONTEND_TOOL_MAP['jupyter-notebook:0.0.1'],
+    FRONTEND_TOOL_MAP['lexical-document:0.0.1'],
+  ],
+  environmentName: 'ai-agents-env',
+  icon: 'search',
+  emoji: '🔍',
+  color: '#0969DA',
+  suggestions: [
+    'Search the web for recent updates about MCP and summarize key findings',
+  ],
+  welcomeMessage:
+    "Hi! I'm the MCP demo agent. I use MCP tools directly without codemode.\n",
+  welcomeNotebook: undefined,
+  welcomeDocument: undefined,
+  sandboxVariant: undefined,
+  systemPrompt: `You are a helpful assistant with access to MCP tools. Use Tavily MCP tools to retrieve web information when needed. Do not claim codemode capabilities.
+`,
+  systemPromptCodemodeAddons: undefined,
+  goal: undefined,
+  protocol: 'vercel-ai',
+  uiExtension: 'a2ui',
+  trigger: undefined,
+  modelConfig: undefined,
+  mcpServerTools: undefined,
+  guardrails: undefined,
+  evals: undefined,
+  codemode: { enabled: false },
+  output: undefined,
+  advanced: undefined,
+  authorizationPolicy: undefined,
+  notifications: undefined,
+  memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
+};
+
+export const DEMO_MONITORING_AGENT_SPEC_0_0_1: AgentSpec = {
+  id: 'demo-monitoring',
+  version: '0.0.1',
+  name: 'Demo Monitoring Agent',
+  description: `Monitoring-focused demo agent with Tavily MCP tools and the datalayer-skills whoami capability for profile-aware assistance.`,
+  tags: ['demo', 'monitoring', 'mcp', 'tavily', 'datalayer-skills'],
+  enabled: true,
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+  mcpServers: [MCP_SERVER_MAP['tavily:0.0.1']],
+  skills: [
+    toAgentSkillSpec(SKILL_MAP['datalayer-whoami:0.0.1']),
+    toAgentSkillSpec(SKILL_MAP['jokes:0.0.1']),
+  ],
+  tools: [],
+  frontendTools: [
+    FRONTEND_TOOL_MAP['jupyter-notebook:0.0.1'],
+    FRONTEND_TOOL_MAP['lexical-document:0.0.1'],
+  ],
+  environmentName: 'ai-agents-env',
+  icon: 'graph',
+  emoji: '📈',
+  color: '#0EA5E9',
+  suggestions: [
+    'Search the web for recent AI observability updates using Tavily and summarize the highlights.',
+    'Who am I on Datalayer and what can I monitor in this session?',
+    'Explain my last turn token and cost behavior in a concise summary.',
+  ],
+  welcomeMessage:
+    "Hi! I'm the Monitoring Demo agent. I can use Tavily for web context and datalayer-skills to inspect your authenticated Datalayer identity.\n",
+  welcomeNotebook: undefined,
+  welcomeDocument: undefined,
+  sandboxVariant: 'jupyter',
+  systemPrompt: `You are a monitoring-oriented assistant. Use Tavily MCP tools for current web information when useful. Use the datalayer-whoami skill when the user asks about identity, profile, or account context. Keep explanations concise and practical.
+`,
+  systemPromptCodemodeAddons: undefined,
+  goal: undefined,
+  protocol: undefined,
+  uiExtension: undefined,
+  trigger: undefined,
+  modelConfig: undefined,
+  mcpServerTools: undefined,
+  guardrails: undefined,
+  evals: undefined,
+  codemode: undefined,
+  output: undefined,
+  advanced: undefined,
+  authorizationPolicy: undefined,
+  notifications: undefined,
+  memory: 'ephemeral',
+  preHooks: { packages: ['datalayer_skills>=0.1.0'] },
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
+};
+
 export const DEMO_ONE_TRIGGER_APPROVAL_AGENT_SPEC_0_0_1: AgentSpec = {
   id: 'demo-one-trigger-approval',
   version: '0.0.1',
@@ -1166,6 +1274,71 @@ export const DEMO_ONE_TRIGGER_AGENT_SPEC_0_0_1: AgentSpec = {
     prompt:
       "List the user's top 3 public and top 3 private GitHub repositories, ranked by recent activity, and provide a brief summary of each.",
   },
+  modelConfig: undefined,
+  mcpServerTools: undefined,
+  guardrails: undefined,
+  evals: undefined,
+  codemode: undefined,
+  output: undefined,
+  advanced: undefined,
+  authorizationPolicy: undefined,
+  notifications: undefined,
+  memory: 'ephemeral',
+  preHooks: undefined,
+  postHooks: undefined,
+  parameters: undefined,
+  subagents: undefined,
+};
+
+export const DEMO_OUTPUTS_AGENT_SPEC_0_0_1: AgentSpec = {
+  id: 'demo-outputs',
+  version: '0.0.1',
+  name: 'Outputs Demo Agent',
+  description: `Demonstrates rich output rendering. Ask it to produce a Markdown table, a JSON payload, an ASCII/ECharts chart spec, or a downloadable file — the Outputs panel will auto-switch to the matching tab.`,
+  tags: ['demo', 'outputs', 'rendering'],
+  enabled: true,
+  model: 'bedrock:us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+  mcpServers: [],
+  skills: [toAgentSkillSpec(SKILL_MAP['events:0.0.1'])],
+  tools: [TOOL_MAP['runtime-echo:0.0.1']],
+  frontendTools: [
+    FRONTEND_TOOL_MAP['jupyter-notebook:0.0.1'],
+    FRONTEND_TOOL_MAP['lexical-document:0.0.1'],
+  ],
+  environmentName: 'ai-agents-env',
+  icon: 'graph',
+  emoji: '📤',
+  color: '#8B5CF6',
+  suggestions: [
+    'Generate a Markdown table of the top 5 US cities by population, with columns City, State, Population.',
+    'Return a JSON object describing a fictitious product catalog with 3 items (id, name, price, tags).',
+    'Produce a bar chart ECharts spec (JSON) showing monthly sales for Jan–Jun.',
+    'Create a downloadable CSV file with sample sales data for the last 7 days and output it inside a ```csv fenced block named sales.csv.',
+  ],
+  welcomeMessage:
+    'Hi! I render rich outputs. Try one of the suggestions to produce a Markdown table, JSON, a chart spec, or a downloadable file — the side panel will switch to the matching tab automatically.\n',
+  welcomeNotebook: undefined,
+  welcomeDocument: undefined,
+  sandboxVariant: 'jupyter',
+  systemPrompt: `You are an Outputs Demo Agent. Your job is to showcase rich output rendering. For every user request, pick exactly ONE of the following output formats and produce the content inside a single fenced code block so the UI can detect and render it:
+
+  1. TABLE  — a GitHub-flavored Markdown table (pipe syntax). No fences.
+  2. JSON   — a valid JSON object inside a \`\`\`json fenced block.
+  3. CHART  — an ECharts \`option\` JSON spec inside a \`\`\`json fenced
+              block whose first line is \`// chart\`. Must include
+              \`xAxis\`, \`yAxis\`, and \`series\`.
+  4. FILE   — a downloadable text artifact inside a fenced block whose
+              info string is the file extension (e.g. \`\`\`csv,
+              \`\`\`md, \`\`\`txt). Start the block with a comment line
+              \`# filename: <name.ext>\` so the UI can label the file.
+
+Always add a 1–2 sentence natural-language preamble before the fenced block (or before the Markdown table). Never mix two output types in a single response. Keep the payloads small (≤ 30 rows / ≤ 2 KB).
+`,
+  systemPromptCodemodeAddons: undefined,
+  goal: undefined,
+  protocol: undefined,
+  uiExtension: undefined,
+  trigger: undefined,
   modelConfig: undefined,
   mcpServerTools: undefined,
   guardrails: undefined,
@@ -3186,8 +3359,11 @@ export const AGENT_SPECS: Record<string, AgentSpec> = {
   'datalayer-agent': DATALAYER_AGENT_SPEC_0_0_1,
   'demo-full': DEMO_FULL_AGENT_SPEC_0_0_1,
   'demo-hooks': DEMO_HOOKS_AGENT_SPEC_0_0_1,
+  'demo-mcp': DEMO_MCP_AGENT_SPEC_0_0_1,
+  'demo-monitoring': DEMO_MONITORING_AGENT_SPEC_0_0_1,
   'demo-one-trigger-approval': DEMO_ONE_TRIGGER_APPROVAL_AGENT_SPEC_0_0_1,
   'demo-one-trigger': DEMO_ONE_TRIGGER_AGENT_SPEC_0_0_1,
+  'demo-outputs': DEMO_OUTPUTS_AGENT_SPEC_0_0_1,
   'demo-parameters': DEMO_PARAMETERS_AGENT_SPEC_0_0_1,
   'demo-simple': DEMO_SIMPLE_AGENT_SPEC_0_0_1,
   'demo-subagents': DEMO_SUBAGENTS_AGENT_SPEC_0_0_1,
