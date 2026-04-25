@@ -22,7 +22,7 @@ const DISPLAY_NAME_EXCEPTIONS: [RegExp, string][] = [
   [/\bGen Ui\b/g, 'Gen UI'],
   [/\bM C P\b/g, 'MCP'],
   [/\bOtel\b/g, 'OTEL'],
-  [/\bAgent Specs\b/g, 'Agentspecs'],
+  [/\bAgent Specs\b/g, 'Agent Specifications'],
 ];
 
 function humanizeExampleName(name: string): string {
@@ -166,11 +166,6 @@ export const EXAMPLE_ENTRIES: ExampleEntry[] = [
     'CopilotKit integration with notebook workflows.',
   ),
   makeEntry(
-    'DatalayerNotebookExample',
-    () => import('./DatalayerNotebookExample'),
-    'Datalayer notebook runtime integration example.',
-  ),
-  makeEntry(
     'AgentCheckpointsExample',
     () => import('./AgentCheckpointsExample'),
     'Checkpoint and resume lifecycle for agents.',
@@ -256,29 +251,34 @@ export const EXAMPLE_ENTRIES: ExampleEntry[] = [
     'Scheduled and one-shot trigger flows.',
   ),
   makeEntry(
-    'LexicalExample',
-    () => import('./LexicalExample'),
+    'LexicalAgentExample',
+    () => import('./LexicalAgentExample'),
     'Lexical document integration example.',
   ),
   makeEntry(
-    'LexicalSidebarExample',
-    () => import('./LexicalSidebarExample'),
+    'LexicalAgentSidebarExample',
+    () => import('./LexicalAgentSidebarExample'),
     'Lexical with sidebar orchestration example.',
+  ),
+  makeEntry(
+    'NotebookAgentExample',
+    () => import('./NotebookAgentExample'),
+    'Notebook orchestration and runtime example.',
+  ),
+  makeEntry(
+    'NotebookAgentSidebarExample',
+    () => import('./NotebookAgentSidebarExample'),
+    'Notebook plus sidebar controls example.',
   ),
   makeEntry(
     'NotebookExample',
     () => import('./NotebookExample'),
-    'Notebook orchestration and runtime example.',
-  ),
-  makeEntry(
-    'NotebookSidebarExample',
-    () => import('./NotebookSidebarExample'),
-    'Notebook plus sidebar controls example.',
-  ),
-  makeEntry(
-    'NotebookSimpleExample',
-    () => import('./NotebookSimpleExample'),
     'Minimal notebook integration example.',
+  ),
+  makeEntry(
+    'NotebookCollaborationExample',
+    () => import('./NotebookCollaborationExample'),
+    'Notebook collaboration runtime integration example.',
   ),
 ];
 

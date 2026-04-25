@@ -702,6 +702,7 @@ const ExampleAppThemed: React.FC<{
 
                 // Classify each example into a named group.
                 const groupOf = (id: string): string => {
+                  if (id === 'AgentSpecsExample') return 'Personas';
                   if (id.startsWith('A2Ui')) return 'A2UI';
                   if (id.startsWith('AgUi')) return 'AG-UI';
                   if (id.startsWith('CopilotKit')) return 'CopilotKit';
@@ -710,21 +711,22 @@ const ExampleAppThemed: React.FC<{
                   if (id.startsWith('Lexical')) return 'Lexical';
                   if (
                     id.startsWith('Notebook') ||
-                    id === 'DatalayerNotebookExample'
+                    id === 'NotebookCollaborationExample'
                   )
                     return 'Notebook';
                   return 'Cell';
                 };
 
                 const groupOrder = [
+                  'Personas',
                   'A2UI',
                   'AG-UI',
                   'Agent',
                   'Chat',
-                  'CopilotKit',
                   'Lexical',
                   'Notebook',
                   'Cell',
+                  'CopilotKit',
                 ];
 
                 const grouped = new Map<string, typeof rest>();

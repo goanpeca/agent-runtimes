@@ -775,7 +775,8 @@ async def stream_loop(
     agent_id: str | None,
     *,
     list_approvals: Any | None = None,
-    decide_approval: Callable[[str, bool, str | None], Awaitable[Any]] | None = None,
+    decide_approval: Callable[[str, bool, str | None, str | None], Awaitable[Any]]
+    | None = None,
     delete_approval: Callable[[str], Awaitable[Any]] | None = None,
 ) -> None:
     """Run the main WebSocket stream loop.
@@ -855,13 +856,35 @@ async def stream_loop(
                                 approval_id = payload.get("approvalId")
                                 approved = payload.get("approved")
                                 note = payload.get("note")
+                                tool_call_id = payload.get("toolCallId") or payload.get(
+                                    "tool_call_id"
+                                )
                                 if isinstance(approval_id, str) and isinstance(
                                     approved, bool
                                 ):
+                                    logger.info(
+                                        "[ws:tool_approval_decision] agent_id=%s approval_id=%s approved=%s tool_call_id=%s",
+                                        agent_id,
+                                        approval_id,
+                                        approved,
+                                        tool_call_id
+                                        if isinstance(tool_call_id, str)
+                                        else None,
+                                    )
                                     await decide_approval(
                                         approval_id,
                                         approved,
                                         note if isinstance(note, str) else None,
+                                        tool_call_id
+                                        if isinstance(tool_call_id, str)
+                                        else None,
+                                    )
+                                else:
+                                    logger.warning(
+                                        "[ws:tool_approval_decision] dropped invalid payload agent_id=%s approval_id=%r approved=%r",
+                                        agent_id,
+                                        approval_id,
+                                        approved,
                                     )
 
                             elif (
@@ -959,7 +982,12 @@ async def stream_loop(
                                     )
 
                     except Exception as exc:
-                        logger.debug("[ws:recv] ignored client message error: %s", exc)
+                        logger.debug(
+                            "[ws:recv] client message handling error agent_id=%s: %s",
+                            agent_id,
+                            exc,
+                            exc_info=True,
+                        )
 
                 if msg_task in done:
                     message = msg_task.result()

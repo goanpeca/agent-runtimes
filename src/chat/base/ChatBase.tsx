@@ -93,6 +93,11 @@ const normalizeAgentId = (value?: string): string =>
   (value ?? '').trim().toLowerCase();
 const normalizeToolName = (value: string): string =>
   value.replace(/[-_]/g, '').toLowerCase();
+const normalizeSkillApprovalId = (value: string): string => {
+  const idx = value.indexOf(':');
+  if (idx <= 0) return value;
+  return value.slice(0, idx);
+};
 
 const stableStringify = (value: unknown): string => {
   if (value === null || typeof value !== 'object') {
@@ -201,7 +206,7 @@ const isApprovalForAgent = (
     return true;
   }
   if (!approval.agent_id) {
-    return true;
+    return false;
   }
   if (approval.agent_id === activeAgentId) {
     return true;
@@ -521,7 +526,9 @@ function ChatBaseInner({
   const storePendingApprovals: PendingApproval[] = useMemo(() => {
     if (pendingApprovalsProp) return pendingApprovalsProp;
     return storeApprovals
-      .filter(a => a.status === 'pending')
+      .filter(
+        a => a.status === 'pending' && isApprovalForAgent(a, activeAgentId),
+      )
       .map(a => ({
         id: a.id,
         toolName: a.tool_name,
@@ -530,7 +537,7 @@ function ChatBaseInner({
         agentId: a.agent_id ?? '',
         requestedAt: a.created_at ?? new Date().toISOString(),
       }));
-  }, [pendingApprovalsProp, storeApprovals]);
+  }, [pendingApprovalsProp, storeApprovals, activeAgentId]);
   const pendingApprovals = storePendingApprovals;
 
   // Persist a one-off approval decision into the tools/skills dropdown state
@@ -547,15 +554,44 @@ function ChatBaseInner({
       const toolName = approval?.tool_name;
       if (!toolName) return;
 
-      // Skill approvals: tool_name is of the form ``skill:<skill_id>`` where
-      // ``skill_id`` itself may include a ``:<version>`` suffix.
-      if (toolName.startsWith('skill:')) {
-        const skillRef = toolName.slice('skill:'.length);
-        if (!skillRef) return;
-        const ok = agentRuntimeStore.getState().sendRawMessage({
-          type: approved ? 'skill_approve' : 'skill_unapprove',
-          skillId: skillRef,
+      // Derive the skill id either from a synthetic ``skill:<id>`` tool_name
+      // OR from a skill-tool call (``run_skill_script`` / ``load_skill`` /
+      // ``read_skill_resource``) carrying ``skill`` / ``skill_name`` / ``name``
+      // in its args.  This belt-and-suspenders approach makes sure the
+      // Approved toggle flips even if the server emits a bare approval
+      // request without the ``skill:`` prefix.
+      const deriveSkillId = (): string | null => {
+        if (toolName.startsWith('skill:')) {
+          const skillRef = toolName.slice('skill:'.length);
+          if (!skillRef) return null;
+          return normalizeSkillApprovalId(skillRef);
+        }
+        const SKILL_TOOLS = new Set([
+          'run_skill_script',
+          'load_skill',
+          'read_skill_resource',
+        ]);
+        if (!SKILL_TOOLS.has(toolName)) return null;
+        const a = (approval?.tool_args ?? {}) as Record<string, unknown>;
+        const raw = a.skill_name ?? a.skill ?? a.name;
+        if (typeof raw !== 'string' || !raw) return null;
+        return normalizeSkillApprovalId(raw);
+      };
+
+      const skillId = deriveSkillId();
+      if (skillId) {
+        setLocalSkillApproval(prev => {
+          const next = new Map(prev);
+          next.set(skillId, approved);
+          return next;
         });
+        const ok = agentRuntimeStore.getState().sendRawMessage(
+          {
+            type: approved ? 'skill_approve' : 'skill_unapprove',
+            skillId,
+          },
+          activeAgentId,
+        );
         if (!ok) {
           console.warn(
             '[ChatBase] skill_approve persistence dropped: websocket not ready',
@@ -569,12 +605,15 @@ function ChatBaseInner({
       if (sep !== -1) {
         const serverId = toolName.slice(0, sep);
         const toolOnly = toolName.slice(sep + 2);
-        const ok = agentRuntimeStore.getState().sendRawMessage({
-          type: 'mcp_server_tool_approve',
-          serverId,
-          toolName: toolOnly,
-          approved,
-        });
+        const ok = agentRuntimeStore.getState().sendRawMessage(
+          {
+            type: 'mcp_server_tool_approve',
+            serverId,
+            toolName: toolOnly,
+            approved,
+          },
+          activeAgentId,
+        );
         if (!ok) {
           console.warn(
             '[ChatBase] mcp_server_tool_approve persistence dropped: websocket not ready',
@@ -582,27 +621,64 @@ function ChatBaseInner({
         }
       }
     },
-    [],
+    [activeAgentId],
   );
 
   // Built-in approve/reject: send decisions to the runtime WS only.
   // Approval state updates are sourced from the ai-agents WS listener.
   const onApproveApproval = useCallback(
-    async (approvalId: string, note?: string) => {
-      // Persist the decision in the tools/skills dropdown BEFORE removing
-      // the approval from the store (we need ``tool_name`` to route it).
-      persistApprovalDecision(approvalId, true);
-      agentRuntimeStore.getState().sendDecision(approvalId, true, note);
+    async (approvalId: string, note?: string, toolCallId?: string) => {
+      const approval = agentRuntimeStore
+        .getState()
+        .approvals.find(a => a.id === approvalId);
+      const ok = agentRuntimeStore
+        .getState()
+        .sendDecision(
+          approvalId,
+          true,
+          note,
+          approval?.tool_call_id ?? toolCallId,
+          activeAgentId,
+        );
+      if (ok) {
+        // Persist decision and clear pending approval only after a successful
+        // WS send so failed sends keep the retryable pending UI visible.
+        persistApprovalDecision(approvalId, true);
+        agentRuntimeStore.getState().removeApproval(approvalId);
+      } else {
+        console.warn(
+          '[ChatBase] tool_approval_decision dropped: websocket not ready',
+        );
+      }
       await onApproveApprovalProp?.(approvalId, note);
     },
-    [onApproveApprovalProp, persistApprovalDecision],
+    [activeAgentId, onApproveApprovalProp, persistApprovalDecision],
   );
   const onRejectApproval = useCallback(
-    async (approvalId: string, note?: string) => {
-      agentRuntimeStore.getState().sendDecision(approvalId, false, note);
+    async (approvalId: string, note?: string, toolCallId?: string) => {
+      const approval = agentRuntimeStore
+        .getState()
+        .approvals.find(a => a.id === approvalId);
+      const ok = agentRuntimeStore
+        .getState()
+        .sendDecision(
+          approvalId,
+          false,
+          note,
+          approval?.tool_call_id ?? toolCallId,
+          activeAgentId,
+        );
+      if (ok) {
+        // Keep pending approval visible when send fails, so the user can retry.
+        agentRuntimeStore.getState().removeApproval(approvalId);
+      } else {
+        console.warn(
+          '[ChatBase] tool_approval_decision dropped: websocket not ready',
+        );
+      }
       await onRejectApprovalProp?.(approvalId, note);
     },
-    [onRejectApprovalProp],
+    [activeAgentId, onRejectApprovalProp],
   );
 
   // Optional ai-agents bridge for server-mode visibility.
@@ -672,13 +748,20 @@ function ChatBaseInner({
         const state = agentRuntimeStore.getState();
         for (const record of records) {
           const approval = normalizeApprovalPayload(record);
-          if (!approval || !isApprovalForAgent(approval, activeAgentId)) {
+          if (!approval) {
             continue;
           }
-          if (approval.status === 'pending') {
-            state.upsertApproval(approval);
+          const scopedApproval: AgentStreamToolApprovalPayload =
+            approval.agent_id || !activeAgentId
+              ? approval
+              : { ...approval, agent_id: activeAgentId };
+          if (!isApprovalForAgent(scopedApproval, activeAgentId)) {
+            continue;
+          }
+          if (scopedApproval.status === 'pending') {
+            state.upsertApproval(scopedApproval);
           } else {
-            state.removeApproval(approval.id);
+            state.removeApproval(scopedApproval.id);
           }
         }
       } catch {
@@ -777,7 +860,17 @@ function ChatBaseInner({
     disableSkill: wsDisableSkill,
     approveSkill: wsApproveSkill,
     unapproveSkill: wsUnapproveSkill,
-  } = useSkillActions();
+  } = useSkillActions(activeAgentId);
+
+  // Optimistic skill-approval overrides so inline approval updates the
+  // Skills selector immediately before the next WS snapshot lands.
+  const [localSkillApproval, setLocalSkillApproval] = useState<
+    Map<string, boolean>
+  >(new Map());
+
+  useEffect(() => {
+    setLocalSkillApproval(new Map());
+  }, [activeAgentId]);
 
   // Derive enabledSkills from the WS-pushed skill statuses.
   const enabledSkills = useMemo(() => {
@@ -798,8 +891,15 @@ function ChatBaseInner({
         set.add(s.id);
       }
     }
+    localSkillApproval.forEach((approved, skillId) => {
+      if (approved) {
+        set.add(skillId);
+      } else {
+        set.delete(skillId);
+      }
+    });
     return set;
-  }, [skillsQuery.data]);
+  }, [localSkillApproval, skillsQuery.data]);
   const contextSnapshotQuery = useContextSnapshot(
     Boolean(protocol?.enableConfigQuery) && showTokenUsage,
     protocol?.configEndpoint,
@@ -901,7 +1001,7 @@ function ChatBaseInner({
       });
       return true;
     },
-    [],
+    [activeAgentId],
   );
 
   // ---- Agent-runtime WebSocket (monitoring stream) ----
@@ -1269,8 +1369,18 @@ function ChatBaseInner({
   const toggleSkillApproval = useCallback(
     (skillId: string) => {
       if (approvedSkills.has(skillId)) {
+        setLocalSkillApproval(prev => {
+          const next = new Map(prev);
+          next.set(skillId, false);
+          return next;
+        });
         wsUnapproveSkill(skillId);
       } else {
+        setLocalSkillApproval(prev => {
+          const next = new Map(prev);
+          next.set(skillId, true);
+          return next;
+        });
         wsApproveSkill(skillId);
       }
     },
@@ -2327,6 +2437,8 @@ function ChatBaseInner({
           const approved = Boolean(resultRecord.approved);
           const fromServerEcho = resultRecord._fromServerEcho === true;
           const alreadyDispatched = resultRecord._alreadyDispatched === true;
+          const requiresClientContinuation =
+            existingToolCall.status === 'inProgress';
           const rawToolName =
             typeof resultRecord.toolName === 'string'
               ? (resultRecord.toolName as string)
@@ -2362,12 +2474,15 @@ function ChatBaseInner({
 
             // Match AgentToolApprovalsExample semantics: first click sends only
             // a websocket decision; continuation waits for server echo.
-            if (!fromServerEcho) {
+            // Deferred pending-approval calls (`status === 'inProgress'`) still
+            // require an explicit sendToolResult continuation from the client,
+            // so do not return early in that mode.
+            if (!fromServerEcho && !requiresClientContinuation) {
               if (approvalId) {
                 if (approved) {
-                  await onApproveApproval?.(approvalId);
+                  await onApproveApproval?.(approvalId, undefined, toolCallId);
                 } else {
-                  await onRejectApproval?.(approvalId);
+                  await onRejectApproval?.(approvalId, undefined, toolCallId);
                 }
               }
               return;
@@ -2375,16 +2490,16 @@ function ChatBaseInner({
 
             if (approvalId && !alreadyDispatched) {
               if (approved) {
-                await onApproveApproval?.(approvalId);
+                await onApproveApproval?.(approvalId, undefined, toolCallId);
               } else {
-                await onRejectApproval?.(approvalId);
+                await onRejectApproval?.(approvalId, undefined, toolCallId);
               }
             }
 
             // MCP approvals are unblocked server-side by the websocket decision
             // and continue on the same stream. Avoid sending an extra
             // sendToolResult continuation, which can trigger duplicate approvals.
-            if (isMcpApprovalTool) {
+            if (isMcpApprovalTool && !requiresClientContinuation) {
               return;
             }
 
