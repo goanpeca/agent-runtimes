@@ -95,7 +95,7 @@ Generated catalogs are produced via:
 make specs
 ```
 
-Generation scripts are under [scripts/codegen](../scripts/codegen), and outputs are written to:
+Generation scripts are under [scripts/codegen](https://github.com/datalayer/agent-runtimes/tree/main/scripts/codegen), and outputs are written to:
 
-- Python: [agent_runtimes/specs](../agent_runtimes/specs)
-- TypeScript: [src/specs](../src/specs)
+- Python: [agent_runtimes/specs](https://github.com/datalayer/agent-runtimes/tree/main/agent_runtimes/specs)
+- TypeScript: [src/specs](https://github.com/datalayer/agent-runtimes/tree/main/src/specs)

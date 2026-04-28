@@ -41,12 +41,12 @@ from .commands import SlashCommand, build_commands
 # For dark terminal backgrounds, use brighter greens (#1ABC9C, #2ECC71) for visibility
 STYLE_PRIMARY = Style(
     color="rgb(26,188,156)"
-)  # Green accent #1ABC9C - primary accent in dark mode
+)  # Green accent 0x1ABC9C - primary accent in dark mode
 STYLE_SECONDARY = Style(
     color="rgb(22,160,133)"
-)  # Green brand #16A085 - secondary accent
-STYLE_ACCENT = Style(color="rgb(46,204,113)")  # Green bright #2ECC71 - highlights
-STYLE_MUTED = Style(color="rgb(89,89,92)")  # Gray #59595C - supporting text
+)  # Green brand 0x16A085 - secondary accent
+STYLE_ACCENT = Style(color="rgb(46,204,113)")  # Green bright 0x2ECC71 - highlights
+STYLE_MUTED = Style(color="rgb(89,89,92)")  # Gray 0x59595C - supporting text
 STYLE_WHITE = Style(color="white")  # Primary text in dark mode
 STYLE_ERROR = Style(color="red")  # Error states
 STYLE_WARNING = Style(color="yellow")  # Warning states
